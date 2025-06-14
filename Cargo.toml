@@ -1,0 +1,8 @@
+[package]
+name = "rustypi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cortex-m-rt = "0.7.5"
+panic-halt = "1.0.0"
