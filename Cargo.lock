@@ -347,9 +347,9 @@ dependencies = [
 
 [[package]]
 name = "rp235x-hal"
-version = "0.3.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2939c82776b0b4ae110168b4298b5adf831e6cff249b057bf2a2187453b959c"
+checksum = "ed1714150c427d4be4022ff92dbf26a7e69c4eb7c1eba151c5752299c7c7f165"
 dependencies = [
  "bitfield 0.14.0",
  "cortex-m",

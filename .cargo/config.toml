@@ -1,5 +1,10 @@
-[build]
-target = "thumbv8m.main-none-eabihf"
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+rustflags = [
+    "-C", "link-arg=-Tlink.x",
+]
 
 [target.thumbv8m.main-none-eabihf]
-rustflags = ["-C", "link-arg=-Tlink.x"]
+runner = "elf2uf2-rs"
+
+[build]
+target = "thumbv8m.main-none-eabihf"
