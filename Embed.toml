@@ -1,0 +1,70 @@
+[default.probe]
+# The protocol to be used for communicating with the target.
+protocol = "Swd"
+
+[default.flashing]
+# Whether or not the target should be flashed.
+enabled = true
+
+# Whether or not the target should be halted after reset.
+# This is useful for debugging.
+halt_afterwards = false
+
+# Whether or not bytes erased but not rewritten with data from the ELF
+# should be restored with their contents before erasing.
+restore_unwritten_bytes = false
+
+# The speed with which to flash the target.
+# Set this to a lower value if you are experiencing problems with flashing.
+flash_layout_output_path = "flash_layout.svg"
+
+[default.reset]
+# Whether or not the target should be reset.
+# When flashing is enabled, the target will be reset after flashing.
+enabled = true
+
+# Whether or not the target should be halted after reset.
+halt_afterwards = false
+
+[default.general]
+# The chip name of the chip to be debugged.
+chip = "RP2350"
+
+# A list of chip descriptions to be loaded during startup.
+chip_descriptions = []
+
+# The default log level to be used.
+log_level = "WARN"
+
+# Use this flag to assert the nreset & ntrst pins during attaching the probe to the chip.
+connect_under_reset = false
+
+[default.rtt]
+# Whether or not an RTTUI should be opened after flashing.
+# This is only used when flashing, not when attaching.
+enabled = true
+
+# A list of channel associations to be displayed. You can rename
+# channels here and have them displayed in the RTTUI.
+channels = [
+    # { up = 0, down = 0, name = "name" }
+]
+
+# The duration in ms for which the logger should retry a failed RTT connection.
+timeout = 3000
+
+# Whether timestamps in the RTTUI are enabled
+show_timestamps = true
+
+# Whether to save rtt history buffer on exit.
+log_enabled = false
+
+# Where to save rtt history buffer relative to manifest path.
+log_path = "./logs"
+
+[default.gdb]
+# Whether or not a GDB server should be opened after flashing.
+enabled = false
+
+# The connection string in host:port format wher the GDB server will open a socket.
+gdb_connection_string = "127.0.0.1:1337"

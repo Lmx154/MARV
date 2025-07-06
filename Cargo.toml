@@ -1,16 +1,33 @@
 [package]
-name = "rustypi"
+name = "rustypico"
 version = "0.1.0"
 edition = "2021"
+authors = ["Luis <your-email@example.com>"]
+description = "A Rust embedded project for Raspberry Pi Pico 2 (RP2350)"
+license = "MIT OR Apache-2.0"
+categories = ["embedded", "hardware-support", "no-std"]
+keywords = ["embedded", "rp2350", "pico2", "raspberry-pi"]
 
 [dependencies]
-cortex-m = "0.7"
+cortex-m = "0.7.2"
 cortex-m-rt = "0.7"
-panic-halt = "1.0.0"
-rp235x-hal = { version = "0.2.0", features = ["rt", "critical-section-impl"] }
-embedded-hal = "1.0"
+embedded-hal = "1.0.0"
+defmt = "0.3"
+defmt-rtt = "0.4.0"
+panic-halt = "0.2.0"
+rp235x-hal = { version = "0.3.0", features = ["binary-info", "critical-section-impl", "rt", "defmt"] }
+
+[profile.dev]
+debug = 2
+lto = false
+opt-level = "s"
 
 [profile.release]
-opt-level = "z"
+debug = 2
 lto = true
-codegen-units = 1
+opt-level = "z"
+
+[[bin]]
+name = "rustypico"
+test = false
+bench = false
