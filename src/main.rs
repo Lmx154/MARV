@@ -160,7 +160,7 @@ fn print_system_status(system_seconds: u32, gps: &GpsModule) {
     let alt_m = gps_data.altitude / 1000; // Convert mm to meters
     
     info!(
-        "SYS RTC: {:02}/{:02}/{:04}, {:02}:{:02}:{:02} GPS: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}°, {}.{:07}°, {}m, {} sats, fix:{}", 
+        "SYS RTC: {:02}/{:02}/{:04}, {:02}:{:02}:{:02} GPS: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}, {}.{:07}, {}m, {} sats, fix:{}", 
         rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second,
         gps_data.month, gps_data.day, gps_data.year, gps_data.hour, gps_data.minute, gps_data.second,
         lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type

@@ -41,7 +41,7 @@ impl GpsData {
         let lon_frac = (self.longitude % 10_000_000).abs();
         let alt_m = self.altitude / 1000; // Convert mm to meters
         
-        let _ = core::write!(output, "{:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}°, {}.{:07}°, {}m, {} sats, fix:{}",
+        let _ = core::write!(output, "{:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}, {}.{:07}, {}m, {} sats, fix:{}",
             self.month, self.day, self.year,
             self.hour, self.minute, self.second,
             lat_whole, lat_frac, lon_whole, lon_frac, alt_m,
@@ -105,8 +105,7 @@ impl GpsModule {
                     Ok(byte) => {
                         if let Some(gps_data) = self.parser.parse_byte(byte) {
                             self.last_gps_data = gps_data;
-                            // Output the simple CSV message
-                            info!("GPS: {}", self.last_gps_data.format_csv().as_str());
+                            // No direct output here; output is handled elsewhere (e.g., with SYS RTC)
                         }
                     }
                     Err(_) => break,
