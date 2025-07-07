@@ -3,5 +3,4 @@
 //! This module contains all sensor-related functionality and drivers.
 
 pub mod gps;
-
-pub use gps::*;
+pub mod pcf8563;

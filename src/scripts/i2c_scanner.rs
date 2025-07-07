@@ -135,9 +135,16 @@ impl I2cScanner {
                         device_found = true;
                     }
                     Err(e) => {
-                        // Log first few errors for debugging
+                        // Log first few unexpected errors for debugging (skip common InvalidWriteBufferLength)
                         if error_count < 3 {
-                            warn!("I2C0 write error at 0x{:02X}: {:?}", addr, e);
+                            match e {
+                                I2cError::InvalidWriteBufferLength => {
+                                    // This is expected for some devices, don't log it
+                                }
+                                _ => {
+                                    warn!("I2C0 write error at 0x{:02X}: {:?}", addr, e);
+                                }
+                            }
                         }
                         error_count += 1;
                     }
@@ -193,9 +200,16 @@ impl I2cScanner {
                         device_found = true;
                     }
                     Err(e) => {
-                        // Log first few errors for debugging
+                        // Log first few unexpected errors for debugging (skip common InvalidWriteBufferLength)
                         if error_count < 3 {
-                            warn!("I2C1 write error at 0x{:02X}: {:?}", addr, e);
+                            match e {
+                                I2cError::InvalidWriteBufferLength => {
+                                    // This is expected for some devices, don't log it
+                                }
+                                _ => {
+                                    warn!("I2C1 write error at 0x{:02X}: {:?}", addr, e);
+                                }
+                            }
                         }
                         error_count += 1;
                     }
@@ -323,6 +337,26 @@ impl I2cScanner {
         }
         
         info!("Common address test complete");
+    }
+    
+    /// Get mutable reference to I2C0 instance (if initialized)
+    pub fn get_i2c0_mut(&mut self) -> Option<&mut I2C<pac::I2C0, (Pin<Gpio4, FunctionI2C, PullUp>, Pin<Gpio5, FunctionI2C, PullUp>)>> {
+        self.i2c0.as_mut()
+    }
+    
+    /// Get mutable reference to I2C1 instance (if initialized)  
+    pub fn get_i2c1_mut(&mut self) -> Option<&mut I2C<pac::I2C1, (Pin<Gpio6, FunctionI2C, PullUp>, Pin<Gpio7, FunctionI2C, PullUp>)>> {
+        self.i2c1.as_mut()
+    }
+    
+    /// Take ownership of I2C0 instance (consumes the instance from scanner)
+    pub fn take_i2c0(&mut self) -> Option<I2C<pac::I2C0, (Pin<Gpio4, FunctionI2C, PullUp>, Pin<Gpio5, FunctionI2C, PullUp>)>> {
+        self.i2c0.take()
+    }
+    
+    /// Take ownership of I2C1 instance (consumes the instance from scanner)
+    pub fn take_i2c1(&mut self) -> Option<I2C<pac::I2C1, (Pin<Gpio6, FunctionI2C, PullUp>, Pin<Gpio7, FunctionI2C, PullUp>)>> {
+        self.i2c1.take()
     }
 }
 

@@ -34,6 +34,7 @@ use hardware::{HARDWARE, constants};
 // Import sensors module
 mod sensors;
 use sensors::gps::GpsModule;
+use sensors::pcf8563::{Pcf8563, DateTime};
 
 // Import scripts module
 mod scripts;
@@ -81,8 +82,9 @@ fn main() -> ! {
 
     let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
 
-    // System time tracking (simulating RTC)
-    let mut system_seconds = 0u32; // Seconds since boot
+    // System time tracking - now will use hardware RTC as primary source
+    let mut _system_seconds = 0u32; // Seconds since boot (for timing intervals)
+    let mut rtc_synced_to_gps = false; // Flag to track if RTC has been synced with GPS
     
     info!("System timer initialized");
 
@@ -126,6 +128,9 @@ fn main() -> ! {
     let (i2c0_sda_pin, i2c0_scl_pin) = HARDWARE.i2c0_pins();
     let (i2c1_sda_pin, i2c1_scl_pin) = HARDWARE.i2c1_pins();
     
+    // Note: We'll initialize PCF8563 RTC after I2C scanner to avoid conflicts
+    // For now, using I2C scanner to detect the RTC at address 0x51
+    
     // Initialize I2C0 bus using hardware configuration
     match i2c_scanner.init_i2c0(
         pac.I2C0, 
@@ -150,6 +155,9 @@ fn main() -> ! {
         Err(e) => error!("Failed to initialize I2C1 bus: {:?}", e),
     }
     
+    // Note: PCF8563 RTC detected at address 0x51 on I2C0
+    // We'll initialize a separate I2C instance for the RTC to avoid conflicts with the scanner
+    
     // Perform initial I2C scan
     info!("Performing initial I2C scan...");
     i2c_scanner.scan_and_print();
@@ -158,6 +166,59 @@ fn main() -> ! {
     info!("Testing common I2C device addresses...");
     i2c_scanner.test_common_addresses();
     
+    // Initialize PCF8563 RTC using I2C0 (detected at address 0x51)
+    let mut rtc = match i2c_scanner.take_i2c0() {
+        Some(i2c0) => {
+            let mut pcf8563 = Pcf8563::new(i2c0);
+            match pcf8563.init() {
+                Ok(()) => {
+                    info!("PCF8563 RTC initialized successfully on I2C0");
+                    
+                    // Perform diagnostic read to understand the current state
+                    if let Err(e) = pcf8563.diagnostic_read() {
+                        warn!("Failed to perform PCF8563 diagnostic: {:?}", e);
+                    }
+                    
+                    // Check if RTC is running and read current time
+                    match pcf8563.is_running() {
+                        Ok(true) => {
+                            match pcf8563.read_datetime() {
+                                Ok(datetime) => {
+                                    let (_, month, day, year, hour, minute, second) = datetime.format_for_defmt();
+                                    info!("PCF8563 current time: {:02}/{:02}/{:04} {:02}:{:02}:{:02}", 
+                                          month, day, year, hour, minute, second);
+                                }
+                                Err(e) => {
+                                    warn!("Failed to read PCF8563 time: {:?}", e);
+                                }
+                            }
+                        }
+                        Ok(false) => {
+                            warn!("PCF8563 clock is not running - will be set from GPS when available");
+                        }
+                        Err(e) => {
+                            warn!("Failed to check PCF8563 status: {:?}", e);
+                        }
+                    }
+                    
+                    Some(pcf8563)
+                }
+                Err(e) => {
+                    error!("Failed to initialize PCF8563 RTC: {:?}", e);
+                    None
+                }
+            }
+        }
+        None => {
+            error!("I2C0 not available for PCF8563 RTC");
+            None
+        }
+    };
+    
+    // System time tracking - now using PCF8563 as source of truth
+    // Keep system_seconds for timing intervals only
+    let mut _system_seconds = 0u32; // Seconds since boot (for timing intervals)
+    
     let mut counter = 0u32;
     
     info!("� System initialized, starting main loop...");
@@ -165,13 +226,44 @@ fn main() -> ! {
     loop {
         counter += 1;
         
-        // Update system time every second (approximate)
+        // Update system time every second (approximate) - keep for timing intervals
         if counter % constants::TIME_UPDATE_INTERVAL == 0 { // Roughly every second based on iterations
-            system_seconds += 1;
+            _system_seconds += 1;
         }
         
         // Poll GPS for new data
         gps.update();
+        
+        // Sync RTC with GPS time when we have a good fix and haven't synced yet
+        let gps_data = gps.get_last_data();
+        if !rtc_synced_to_gps && gps_data.fix_type == 3 && gps_data.year != 0 {
+            if let Some(ref mut rtc_device) = rtc {
+                // Create DateTime from GPS data
+                let mut gps_datetime = DateTime::from_gps(gps_data);
+                gps_datetime.calculate_weekday();
+                
+                match rtc_device.write_datetime(&gps_datetime) {
+                    Ok(()) => {
+                        rtc_synced_to_gps = true;
+                        info!("PCF8563 RTC synchronized with GPS time! GPS: {:02}/{:02}/{:04} {:02}:{:02}:{:02}", 
+                              gps_data.month, gps_data.day, gps_data.year,
+                              gps_data.hour, gps_data.minute, gps_data.second);
+                        
+                        // Give RTC a moment to stabilize after write
+                        timer.delay_us(10_000); // 10ms delay
+                        
+                        // Perform diagnostic read after GPS sync to see what happened
+                        info!("=== Post-GPS Sync Diagnostic ===");
+                        if let Err(e) = rtc_device.diagnostic_read() {
+                            warn!("Failed to perform post-sync diagnostic: {:?}", e);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to sync RTC with GPS: {:?}", e);
+                    }
+                }
+            }
+        }
         
         // Blink LED every 1000 iterations
         if counter % constants::LED_BLINK_INTERVAL == 0 {
@@ -184,13 +276,7 @@ fn main() -> ! {
         
         // Print system status every 10,000 iterations (approximately 1 second)
         if counter % constants::STATUS_PRINT_INTERVAL == 0 {
-            print_system_status(system_seconds, &gps);
-        }
-        
-        // Perform I2C scan every 30 seconds (300,000 iterations)
-        if counter % (constants::STATUS_PRINT_INTERVAL * 30) == 0 && counter > 0 {
-            info!("Performing periodic I2C scan...");
-            i2c_scanner.scan_and_print();
+            print_system_status(&mut rtc, &gps);
         }
         
         // Small delay to prevent excessive polling
@@ -198,25 +284,27 @@ fn main() -> ! {
     }
 }
 
-/// Print system status including GPS information
+/// Print system status including GPS and RTC information
 /// Format: "SYS RTC: MM/DD/YYYY, HH:MM:SS GPS: MM/DD/YYYY, HH:MM:SS, LAT, LONG, ALT, SATS, FIX"
-fn print_system_status(system_seconds: u32, gps: &GpsModule) {
-    // Calculate RTC time from system seconds (starting from boot time)
-    // Base time: July 6, 2025, 14:30:00
-    let base_hour = 14;
-    let base_minute = 30;
-    let base_second = 0;
-    
-    let total_seconds = base_second + (base_minute * 60) + (base_hour * 3600) + system_seconds;
-    let rtc_hour = (total_seconds / 3600) % 24;
-    let rtc_minute = (total_seconds / 60) % 60;
-    let rtc_second = total_seconds % 60;
-    
-    let rtc_month = 7;
-    let rtc_day = 6;
-    let rtc_year = 2025;
-    
+fn print_system_status(rtc: &mut Option<Pcf8563<hal::I2C<hal::pac::I2C0, (hal::gpio::Pin<hal::gpio::bank0::Gpio4, hal::gpio::FunctionI2C, hal::gpio::PullUp>, hal::gpio::Pin<hal::gpio::bank0::Gpio5, hal::gpio::FunctionI2C, hal::gpio::PullUp>)>>>, gps: &GpsModule) {
     let gps_data = gps.get_last_data();
+    
+    // Try to read current time from hardware RTC
+    let (rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second) = if let Some(ref mut rtc_device) = rtc {
+        match rtc_device.read_datetime() {
+            Ok(datetime) => {
+                (datetime.month, datetime.day, datetime.year, datetime.hour, datetime.minute, datetime.second)
+            }
+            Err(_) => {
+                // RTC read failed, use fallback time
+                warn!("Failed to read RTC, using fallback time");
+                (7, 7, 2025, 0, 0, 0) // Current date with 00:00:00 time
+            }
+        }
+    } else {
+        // No RTC available, use fallback time
+        (7, 7, 2025, 0, 0, 0) // Current date with 00:00:00 time
+    };
     
     // Format GPS coordinates in human-readable format
     let lat_whole = gps_data.latitude / 10_000_000;
