@@ -1,15 +1,12 @@
-//! # GPS Example with u-blox NEO M9N
+//! # Basic Raspberry Pi Pico 2 Example
 //!
-//! This application demonstrates how to parse UBX packets from a GPS module
-//! and display the data in a readable format including RTC time.
-//! GPS is connected to UART0: GP0 (TX), GP1 (RX)
+//! This application demonstrates basic functionality on the RP2350
+//! including LED blinking and system time tracking.
 //!
 //! ## Status:
-//! - ✅ GPS UBX packet parser implemented
-//! - ✅ Real UART GPS communication active
-//! - ✅ Display format: "RTC Time: mm/dd/yyyy, hh:mm:ss, latitude, longitude, altitude, satellites"
 //! - ✅ no_std embedded environment
 //! - ✅ Basic LED blinking functionality
+//! - ✅ System time tracking
 
 #![no_std]
 #![no_main]
@@ -24,29 +21,28 @@ use rp235x_hal as hal;
 // Some things we need
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
-use embedded_hal_nb::serial::Read;
-use hal::fugit::RateExtU32;
 
 // Import defmt for debug output
 use defmt::*;
 use defmt_rtt as _;
 
-// Import our GPS module
+// Import our hardware configuration
+mod hardware;
+use hardware::{HARDWARE, constants};
+
+// Import sensors module
 mod sensors;
-use sensors::{GpsData, UbxParser};
+use sensors::gps::GpsModule;
 
 /// Tell the Boot ROM about our application
 #[link_section = ".start_block"]
 #[used]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
-/// External high-speed crystal on the Raspberry Pi Pico 2 board is 12 MHz
-const XTAL_FREQ_HZ: u32 = 12_000_000u32;
-
 /// Entry point to our bare-metal application.
 #[hal::entry]
 fn main() -> ! {
-    info!("Starting RustyPi on RP2350 with GPS!");
+    info!("Starting RustyPi on RP2350!");
     info!("Hello, World! 🦀");
     
     // Grab our singleton objects
@@ -58,7 +54,7 @@ fn main() -> ! {
 
     // Configure the clocks
     let clocks = hal::clocks::init_clocks_and_plls(
-        XTAL_FREQ_HZ,
+        HARDWARE.xtal_frequency(),
         pac.XOSC,
         pac.CLOCKS,
         pac.PLL_SYS,
@@ -89,79 +85,56 @@ fn main() -> ! {
 
     // Configure GPIO25 as an output for LED
     let mut led_pin = pins.gpio25.into_push_pull_output();
-    info!("GPIO25 (LED) configured as output");
+    info!("GPIO{} (LED) configured as output", HARDWARE.led_pin());
     
-    // Configure UART0 for GPS communication
-    // GP0 = UART0 TX, GP1 = UART0 RX
-    let uart_pins = (
-        pins.gpio0.into_function::<hal::gpio::FunctionUart>(),
-        pins.gpio1.into_function::<hal::gpio::FunctionUart>(),
-    );
+    // Initialize GPS module
+    let mut gps = GpsModule::new();
     
-    let mut uart = hal::uart::UartPeripheral::new(pac.UART0, uart_pins, &mut pac.RESETS)
-        .enable(
-            hal::uart::UartConfig::new(
-                9600_u32.Hz(),
-                hal::uart::DataBits::Eight,
-                None,
-                hal::uart::StopBits::One,
-            ),
-            125_000_000_u32.Hz(), // System clock frequency
-        )
-        .unwrap();
+    // Initialize GPS with UART0 on GP0 (TX) and GP1 (RX)
+    match gps.init(pac.UART0, pins.gpio0, pins.gpio1, &mut pac.RESETS, &clocks) {
+        Ok(()) => info!("GPS module initialized successfully on GP0/GP1"),
+        Err(e) => {
+            error!("Failed to initialize GPS module: {:?}", e);
+        }
+    }
     
-    info!("UART0 configured for GPS (9600 baud, 8N1)");
-    
-    // Initialize GPS parser
-    let mut gps_parser = UbxParser::new();
-    let mut last_gps_data = GpsData::default();
     let mut counter = 0u32;
     
-    info!("🛰️ GPS system initialized, waiting for data...");
+    info!("� System initialized, starting main loop...");
     
     loop {
         counter += 1;
         
         // Update system time every second (approximate)
-        if counter % 10000 == 0 { // Roughly every second based on iterations
+        if counter % constants::TIME_UPDATE_INTERVAL == 0 { // Roughly every second based on iterations
             system_seconds += 1;
         }
         
-        // Check for incoming GPS data
-        match uart.read() {
-            Ok(byte) => {
-                if let Some(gps_data) = gps_parser.process_byte(byte) {
-                    last_gps_data = gps_data;
-                    // GPS data updated silently
-                }
-            }
-            Err(_) => {
-                // No data available, continue
-            }
-        }
+        // Poll GPS for new data
+        gps.update();
         
         // Blink LED every 1000 iterations
-        if counter % 1000 == 0 {
-            if (counter / 1000) % 2 == 0 {
+        if counter % constants::LED_BLINK_INTERVAL == 0 {
+            if (counter / constants::LED_BLINK_INTERVAL) % 2 == 0 {
                 led_pin.set_high().unwrap();
             } else {
                 led_pin.set_low().unwrap();
             }
         }
         
-        // Print GPS status every 10,000 iterations (approximately 1 second)
-        if counter % 10_000 == 0 {
-            print_gps_status(&last_gps_data, system_seconds);
+        // Print system status every 10,000 iterations (approximately 1 second)
+        if counter % constants::STATUS_PRINT_INTERVAL == 0 {
+            print_system_status(system_seconds, &gps);
         }
         
         // Small delay to prevent excessive polling
-        timer.delay_us(100);
+        timer.delay_us(constants::MAIN_LOOP_DELAY_US);
     }
 }
 
-/// Print GPS status in the requested format
-/// Format: "RTC Time: mm/dd/yyyy, hh:mm:ss, GPS Time: mm/dd/yyyy, hh:mm:ss, latitude, longitude, altitude, satellites"
-fn print_gps_status(gps_data: &GpsData, system_seconds: u32) {
+/// Print system status including GPS information
+/// Format: "SYS RTC: MM/DD/YYYY, HH:MM:SS GPS: MM/DD/YYYY, HH:MM:SS, LAT, LONG, ALT, SATS, FIX"
+fn print_system_status(system_seconds: u32, gps: &GpsModule) {
     // Calculate RTC time from system seconds (starting from boot time)
     // Base time: July 6, 2025, 14:30:00
     let base_hour = 14;
@@ -177,30 +150,21 @@ fn print_gps_status(gps_data: &GpsData, system_seconds: u32) {
     let rtc_day = 6;
     let rtc_year = 2025;
     
-    if gps_data.fix_valid {
-        // Use GPS coordinates and GPS time when we have a fix
-        let lat_int = (gps_data.latitude * 1000000.0) as i32;
-        let lon_int = (gps_data.longitude * 1000000.0) as i32;
-        
-        info!(
-            "RTC Time: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, GPS Time: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:06}, {}.{:06}, {}, {}", 
-            rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second,
-            gps_data.month, gps_data.day, gps_data.year, gps_data.hour, gps_data.minute, gps_data.second,
-            lat_int / 1000000, 
-            (lat_int % 1000000).abs(),
-            lon_int / 1000000,
-            (lon_int % 1000000).abs(),
-            gps_data.altitude / 1000, // Convert mm to m
-            gps_data.satellites
-        );
-    } else {
-        // Show zeros when no fix, but still show RTC time and satellite count
-        info!(
-            "RTC Time: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, GPS Time: 00/00/0000, 00:00:00, 0.000000, 0.000000, 0, {}", 
-            rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second,
-            gps_data.satellites
-        );
-    }
+    let gps_data = gps.get_last_data();
+    
+    // Format GPS coordinates in human-readable format
+    let lat_whole = gps_data.latitude / 10_000_000;
+    let lat_frac = (gps_data.latitude % 10_000_000).abs();
+    let lon_whole = gps_data.longitude / 10_000_000;
+    let lon_frac = (gps_data.longitude % 10_000_000).abs();
+    let alt_m = gps_data.altitude / 1000; // Convert mm to meters
+    
+    info!(
+        "SYS RTC: {:02}/{:02}/{:04}, {:02}:{:02}:{:02} GPS: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}°, {}.{:07}°, {}m, {} sats, fix:{}", 
+        rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second,
+        gps_data.month, gps_data.day, gps_data.year, gps_data.hour, gps_data.minute, gps_data.second,
+        lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type
+    );
 }
 
 /// Program metadata for `picotool info`
@@ -209,7 +173,7 @@ fn print_gps_status(gps_data: &GpsData, system_seconds: u32) {
 pub static PICOTOOL_ENTRIES: [hal::binary_info::EntryAddr; 5] = [
     hal::binary_info::rp_cargo_bin_name!(),
     hal::binary_info::rp_cargo_version!(),
-    hal::binary_info::rp_program_description!(c"RustyPico GPS UBX Parser Example"),
+    hal::binary_info::rp_program_description!(c"RustyPico Basic Example"),
     hal::binary_info::rp_cargo_homepage_url!(),
     hal::binary_info::rp_program_build_attribute!(),
 ];
