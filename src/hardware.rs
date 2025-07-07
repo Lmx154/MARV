@@ -16,9 +16,13 @@ pub struct HardwareConfig {
     pub uart0_tx_pin: u8,
     pub uart0_rx_pin: u8,
     
-    /// I2C pins (if needed for sensors)
-    pub i2c_sda_pin: u8,
-    pub i2c_scl_pin: u8,
+    /// I2C0 pins
+    pub i2c0_sda_pin: u8,
+    pub i2c0_scl_pin: u8,
+    
+    /// I2C1 pins  
+    pub i2c1_sda_pin: u8,
+    pub i2c1_scl_pin: u8,
     
     /// SPI pins (if needed)
     pub spi_mosi_pin: u8,
@@ -48,9 +52,13 @@ impl Default for HardwareConfig {
             uart0_tx_pin: 0,       // GP0 - UART0 TX
             uart0_rx_pin: 1,       // GP1 - UART0 RX
             
-            // I2C pins (I2C0)
-            i2c_sda_pin: 4,        // GP4 - I2C0 SDA
-            i2c_scl_pin: 5,        // GP5 - I2C0 SCL
+            // I2C0 pins
+            i2c0_sda_pin: 4,       // GP4 - I2C0 SDA
+            i2c0_scl_pin: 5,       // GP5 - I2C0 SCL
+            
+            // I2C1 pins
+            i2c1_sda_pin: 6,       // GP6 - I2C1 SDA
+            i2c1_scl_pin: 7,       // GP7 - I2C1 SCL
             
             // SPI pins (SPI0)
             spi_mosi_pin: 16,      // GP16 - SPI0 TX (MOSI)
@@ -74,22 +82,22 @@ impl Default for HardwareConfig {
 pub static HARDWARE: HardwareConfig = HardwareConfig {
     // You can override specific pins here if needed
     // For now, using all defaults
-    ..HardwareConfig {
-        led_pin: 25,
-        uart0_tx_pin: 0,
-        uart0_rx_pin: 1,
-        i2c_sda_pin: 4,
-        i2c_scl_pin: 5,
-        spi_mosi_pin: 16,
-        spi_miso_pin: 17,
-        spi_sck_pin: 18,
-        spi_cs_pin: 19,
-        adc_pin0: 26,
-        adc_pin1: 27,
-        adc_pin2: 28,
-        xtal_freq_hz: 12_000_000,
-        system_clock_hz: 125_000_000,
-    }
+    led_pin: 25,
+    uart0_tx_pin: 0,
+    uart0_rx_pin: 1,
+    i2c0_sda_pin: 4,
+    i2c0_scl_pin: 5,
+    i2c1_sda_pin: 6,
+    i2c1_scl_pin: 7,
+    spi_mosi_pin: 16,
+    spi_miso_pin: 17,
+    spi_sck_pin: 18,
+    spi_cs_pin: 19,
+    adc_pin0: 26,
+    adc_pin1: 27,
+    adc_pin2: 28,
+    xtal_freq_hz: 12_000_000,
+    system_clock_hz: 125_000_000,
 };
 
 /// Helper functions to get specific pin configurations
@@ -104,9 +112,14 @@ impl HardwareConfig {
         (self.uart0_tx_pin, self.uart0_rx_pin)
     }
     
-    /// Get I2C pin configuration as a tuple (SDA, SCL)
-    pub const fn i2c_pins(&self) -> (u8, u8) {
-        (self.i2c_sda_pin, self.i2c_scl_pin)
+    /// Get I2C0 pin configuration as a tuple (SDA, SCL)
+    pub const fn i2c0_pins(&self) -> (u8, u8) {
+        (self.i2c0_sda_pin, self.i2c0_scl_pin)
+    }
+    
+    /// Get I2C1 pin configuration as a tuple (SDA, SCL)
+    pub const fn i2c1_pins(&self) -> (u8, u8) {
+        (self.i2c1_sda_pin, self.i2c1_scl_pin)
     }
     
     /// Get SPI pin configuration as a tuple (MOSI, MISO, SCK, CS)

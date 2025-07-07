@@ -21,6 +21,7 @@ use rp235x_hal as hal;
 // Some things we need
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
+use hal::Clock;
 
 // Import defmt for debug output
 use defmt::*;
@@ -33,6 +34,10 @@ use hardware::{HARDWARE, constants};
 // Import sensors module
 mod sensors;
 use sensors::gps::GpsModule;
+
+// Import scripts module
+mod scripts;
+use scripts::i2c_scanner::I2cScanner;
 
 /// Tell the Boot ROM about our application
 #[link_section = ".start_block"]
@@ -98,6 +103,46 @@ fn main() -> ! {
         }
     }
     
+    // Initialize I2C Scanner
+    let mut i2c_scanner = I2cScanner::new();
+    
+    // Validate I2C pin configuration matches hardware config
+    if let Err(e) = I2cScanner::validate_pin_configuration() {
+        error!("I2C pin configuration error: {}", e);
+    }
+    
+    // Get I2C pin configuration from hardware config
+    let (i2c0_sda_pin, i2c0_scl_pin) = HARDWARE.i2c0_pins();
+    let (i2c1_sda_pin, i2c1_scl_pin) = HARDWARE.i2c1_pins();
+    
+    // Initialize I2C0 bus using hardware configuration
+    match i2c_scanner.init_i2c0(
+        pac.I2C0, 
+        pins.gpio4,  // This should match i2c0_sda_pin
+        pins.gpio5,  // This should match i2c0_scl_pin
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq()
+    ) {
+        Ok(()) => info!("I2C0 bus initialized successfully on GP{}/GP{}", i2c0_sda_pin, i2c0_scl_pin),
+        Err(e) => error!("Failed to initialize I2C0 bus: {:?}", e),
+    }
+    
+    // Initialize I2C1 bus using hardware configuration
+    match i2c_scanner.init_i2c1(
+        pac.I2C1,
+        pins.gpio6,  // This should match i2c1_sda_pin
+        pins.gpio7,  // This should match i2c1_scl_pin
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq()
+    ) {
+        Ok(()) => info!("I2C1 bus initialized successfully on GP{}/GP{}", i2c1_sda_pin, i2c1_scl_pin),
+        Err(e) => error!("Failed to initialize I2C1 bus: {:?}", e),
+    }
+    
+    // Perform initial I2C scan
+    info!("Performing initial I2C scan...");
+    i2c_scanner.scan_and_print();
+    
     let mut counter = 0u32;
     
     info!("� System initialized, starting main loop...");
@@ -125,6 +170,12 @@ fn main() -> ! {
         // Print system status every 10,000 iterations (approximately 1 second)
         if counter % constants::STATUS_PRINT_INTERVAL == 0 {
             print_system_status(system_seconds, &gps);
+        }
+        
+        // Perform I2C scan every 30 seconds (300,000 iterations)
+        if counter % (constants::STATUS_PRINT_INTERVAL * 30) == 0 && counter > 0 {
+            info!("Performing periodic I2C scan...");
+            i2c_scanner.scan_and_print();
         }
         
         // Small delay to prevent excessive polling
