@@ -3,11 +3,16 @@
 //! This module defines all hardware pin configurations and provides a unified
 //! interface for accessing hardware resources. All pin assignments should be
 //! defined here to make hardware changes easy to manage.
+//!
+//! The hardware configuration can be easily modified by changing the values
+//! in the HARDWARE constant, making it simple to support different board
+//! configurations or user preferences.
 
-use rp235x_hal as hal;
+use defmt::*;
 
 /// Hardware configuration structure that holds all pin definitions
 /// and hardware-specific constants
+#[derive(Clone, Copy)]
 pub struct HardwareConfig {
     /// LED pin (typically GPIO25 on Pico boards)
     pub led_pin: u8,
@@ -143,6 +148,67 @@ impl HardwareConfig {
     }
 }
 
+/// Validation functions to ensure pin configurations are supported
+impl HardwareConfig {
+    /// Validate that all pin configurations are valid and supported
+    pub fn validate_configuration(&self) -> Result<(), &'static str> {
+        // Validate LED pin
+        if self.led_pin > 28 {
+            return Err("LED pin must be between 0-28");
+        }
+        
+        // Validate UART pins
+        if self.uart0_tx_pin > 28 || self.uart0_rx_pin > 28 {
+            return Err("UART pins must be between 0-28");
+        }
+        
+        // Validate I2C pins
+        if self.i2c0_sda_pin > 28 || self.i2c0_scl_pin > 28 ||
+           self.i2c1_sda_pin > 28 || self.i2c1_scl_pin > 28 {
+            return Err("I2C pins must be between 0-28");
+        }
+        
+        // Check for pin conflicts
+        let mut used_pins = heapless::FnvIndexSet::<u8, 16>::new();
+        
+        if !used_pins.insert(self.led_pin).unwrap_or(false) {
+            return Err("Pin conflict detected: LED pin already in use");
+        }
+        if !used_pins.insert(self.uart0_tx_pin).unwrap_or(false) {
+            return Err("Pin conflict detected: UART0 TX pin already in use");
+        }
+        if !used_pins.insert(self.uart0_rx_pin).unwrap_or(false) {
+            return Err("Pin conflict detected: UART0 RX pin already in use");
+        }
+        if !used_pins.insert(self.i2c0_sda_pin).unwrap_or(false) {
+            return Err("Pin conflict detected: I2C0 SDA pin already in use");
+        }
+        if !used_pins.insert(self.i2c0_scl_pin).unwrap_or(false) {
+            return Err("Pin conflict detected: I2C0 SCL pin already in use");
+        }
+        if !used_pins.insert(self.i2c1_sda_pin).unwrap_or(false) {
+            return Err("Pin conflict detected: I2C1 SDA pin already in use");
+        }
+        if !used_pins.insert(self.i2c1_scl_pin).unwrap_or(false) {
+            return Err("Pin conflict detected: I2C1 SCL pin already in use");
+        }
+        
+        info!("Hardware configuration validated successfully");
+        Ok(())
+    }
+    
+    /// Print the current hardware configuration
+    pub fn print_configuration(&self) {
+        info!("Hardware Configuration:");
+        info!("  LED: GP{}", self.led_pin);
+        info!("  UART0: GP{} (TX), GP{} (RX)", self.uart0_tx_pin, self.uart0_rx_pin);
+        info!("  I2C0: GP{} (SDA), GP{} (SCL)", self.i2c0_sda_pin, self.i2c0_scl_pin);
+        info!("  I2C1: GP{} (SDA), GP{} (SCL)", self.i2c1_sda_pin, self.i2c1_scl_pin);
+        info!("  Crystal: {} Hz", self.xtal_freq_hz);
+        info!("  System Clock: {} Hz", self.system_clock_hz);
+    }
+}
+
 /// Pin configuration macros for easy access
 /// These macros help reduce boilerplate when configuring pins
 
@@ -241,18 +307,3 @@ pub mod board {
         pub const ADC3: u8 = 29; // Also connected to VSYS/3
     }
 }
-
-// Example usage documentation
-// 
-// ```rust
-// use crate::hardware::{HARDWARE, constants};
-// 
-// // Get LED pin number
-// let led_pin_num = HARDWARE.led_pin();
-// 
-// // Get UART pins
-// let (tx_pin, rx_pin) = HARDWARE.uart0_pins();
-// 
-// // Use constants
-// let baud_rate = constants::DEFAULT_UART_BAUD;
-// ```

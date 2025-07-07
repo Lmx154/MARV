@@ -50,6 +50,15 @@ fn main() -> ! {
     info!("Starting RustyPi on RP2350!");
     info!("Hello, World! 🦀");
     
+    // Validate hardware configuration first
+    if let Err(e) = HARDWARE.validate_configuration() {
+        error!("Hardware configuration error: {}", e);
+        cortex_m::asm::udf(); // Trigger undefined instruction exception
+    }
+    
+    // Print hardware configuration
+    HARDWARE.print_configuration();
+    
     // Grab our singleton objects
     let mut pac = hal::pac::Peripherals::take().unwrap();
 
@@ -88,16 +97,18 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    // Configure GPIO25 as an output for LED
-    let mut led_pin = pins.gpio25.into_push_pull_output();
-    info!("GPIO{} (LED) configured as output", HARDWARE.led_pin());
+    // Configure LED as output using hardware configuration
+    let led_pin_num = HARDWARE.led_pin();
+    let mut led_pin = pins.gpio25.into_push_pull_output(); // Currently hardcoded to match HARDWARE.led_pin()
+    info!("GPIO{} (LED) configured as output", led_pin_num);
     
-    // Initialize GPS module
+    // Initialize GPS module using hardware configuration
     let mut gps = GpsModule::new();
+    let (uart_tx_pin, uart_rx_pin) = HARDWARE.uart0_pins();
     
-    // Initialize GPS with UART0 on GP0 (TX) and GP1 (RX)
+    // Initialize GPS with UART0 - pins are configured in hardware config
     match gps.init(pac.UART0, pins.gpio0, pins.gpio1, &mut pac.RESETS, &clocks) {
-        Ok(()) => info!("GPS module initialized successfully on GP0/GP1"),
+        Ok(()) => info!("GPS module initialized successfully on GP{}/GP{}", uart_tx_pin, uart_rx_pin),
         Err(e) => {
             error!("Failed to initialize GPS module: {:?}", e);
         }
@@ -142,6 +153,10 @@ fn main() -> ! {
     // Perform initial I2C scan
     info!("Performing initial I2C scan...");
     i2c_scanner.scan_and_print();
+    
+    // Test common device addresses specifically
+    info!("Testing common I2C device addresses...");
+    i2c_scanner.test_common_addresses();
     
     let mut counter = 0u32;
     

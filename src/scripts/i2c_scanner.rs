@@ -37,25 +37,20 @@ impl I2cScanner {
     
     /// Validate that the hardcoded pins match the hardware configuration
     pub fn validate_pin_configuration() -> Result<(), &'static str> {
-        let (hw_i2c0_sda, hw_i2c0_scl) = Self::get_i2c0_pins();
-        let (hw_i2c1_sda, hw_i2c1_scl) = Self::get_i2c1_pins();
+        let (hw_i2c0_sda, hw_i2c0_scl) = HARDWARE.i2c0_pins();
+        let (hw_i2c1_sda, hw_i2c1_scl) = HARDWARE.i2c1_pins();
         
-        // Hardcoded pins in this implementation
-        const HARDCODED_I2C0_SDA: u8 = 4;
-        const HARDCODED_I2C0_SCL: u8 = 5;
-        const HARDCODED_I2C1_SDA: u8 = 6;
-        const HARDCODED_I2C1_SCL: u8 = 7;
-        
-        if hw_i2c0_sda != HARDCODED_I2C0_SDA || hw_i2c0_scl != HARDCODED_I2C0_SCL {
-            error!("I2C0 pin mismatch! Hardware config: GP{}/GP{}, Hardcoded: GP{}/GP{}", 
-                   hw_i2c0_sda, hw_i2c0_scl, HARDCODED_I2C0_SDA, HARDCODED_I2C0_SCL);
-            return Err("I2C0 pin configuration mismatch");
+        // Check if configured pins match what this scanner supports
+        if hw_i2c0_sda != 4 || hw_i2c0_scl != 5 {
+            error!("I2C0 pin configuration mismatch! Hardware config: GP{}/GP{}, Scanner expects: GP4/GP5", 
+                   hw_i2c0_sda, hw_i2c0_scl);
+            return Err("I2C0 pin configuration not supported by scanner");
         }
         
-        if hw_i2c1_sda != HARDCODED_I2C1_SDA || hw_i2c1_scl != HARDCODED_I2C1_SCL {
-            error!("I2C1 pin mismatch! Hardware config: GP{}/GP{}, Hardcoded: GP{}/GP{}", 
-                   hw_i2c1_sda, hw_i2c1_scl, HARDCODED_I2C1_SDA, HARDCODED_I2C1_SCL);
-            return Err("I2C1 pin configuration mismatch");
+        if hw_i2c1_sda != 6 || hw_i2c1_scl != 7 {
+            error!("I2C1 pin configuration mismatch! Hardware config: GP{}/GP{}, Scanner expects: GP6/GP7", 
+                   hw_i2c1_sda, hw_i2c1_scl);
+            return Err("I2C1 pin configuration not supported by scanner");
         }
         
         info!("I2C pin configuration validated successfully");
@@ -124,20 +119,51 @@ impl I2cScanner {
         
         if let Some(ref mut i2c) = self.i2c0 {
             info!("Scanning I2C0 bus...");
+            let mut scan_count = 0;
+            let mut error_count = 0;
             
             // Scan addresses 0x08 to 0x77 (valid 7-bit I2C addresses)
             for addr in 0x08..=0x77 {
-                // Try to write 0 bytes to the address to check if device responds
+                scan_count += 1;
+                
+                // Try multiple approaches to detect devices
+                let mut device_found = false;
+                
+                // Method 1: Try to write 0 bytes (address-only transaction)
                 match i2c.write(addr, &[]) {
                     Ok(_) => {
-                        info!("Device found at address: 0x{:02X}", addr);
-                        let _ = found_addresses.push(addr);
+                        device_found = true;
                     }
-                    Err(_) => {
-                        // No device at this address, continue scanning
+                    Err(e) => {
+                        // Log first few errors for debugging
+                        if error_count < 3 {
+                            warn!("I2C0 write error at 0x{:02X}: {:?}", addr, e);
+                        }
+                        error_count += 1;
                     }
                 }
+                
+                // Method 2: If write failed, try read (some devices only respond to reads)
+                if !device_found {
+                    let mut buffer = [0u8; 1];
+                    match i2c.read(addr, &mut buffer) {
+                        Ok(_) => {
+                            device_found = true;
+                        }
+                        Err(_) => {
+                            // Continue - this is expected for non-existent devices
+                        }
+                    }
+                }
+                
+                if device_found {
+                    info!("Device found at address: 0x{:02X}", addr);
+                    let _ = found_addresses.push(addr);
+                }
             }
+            
+            info!("I2C0 scan complete: {} addresses scanned, {} errors, {} devices found", 
+                  scan_count, error_count, found_addresses.len());
         } else {
             warn!("I2C0 not initialized");
         }
@@ -151,20 +177,51 @@ impl I2cScanner {
         
         if let Some(ref mut i2c) = self.i2c1 {
             info!("Scanning I2C1 bus...");
+            let mut scan_count = 0;
+            let mut error_count = 0;
             
             // Scan addresses 0x08 to 0x77 (valid 7-bit I2C addresses)
             for addr in 0x08..=0x77 {
-                // Try to write 0 bytes to the address to check if device responds
+                scan_count += 1;
+                
+                // Try multiple approaches to detect devices
+                let mut device_found = false;
+                
+                // Method 1: Try to write 0 bytes (address-only transaction)
                 match i2c.write(addr, &[]) {
                     Ok(_) => {
-                        info!("Device found at address: 0x{:02X}", addr);
-                        let _ = found_addresses.push(addr);
+                        device_found = true;
                     }
-                    Err(_) => {
-                        // No device at this address, continue scanning
+                    Err(e) => {
+                        // Log first few errors for debugging
+                        if error_count < 3 {
+                            warn!("I2C1 write error at 0x{:02X}: {:?}", addr, e);
+                        }
+                        error_count += 1;
                     }
                 }
+                
+                // Method 2: If write failed, try read (some devices only respond to reads)
+                if !device_found {
+                    let mut buffer = [0u8; 1];
+                    match i2c.read(addr, &mut buffer) {
+                        Ok(_) => {
+                            device_found = true;
+                        }
+                        Err(_) => {
+                            // Continue - this is expected for non-existent devices
+                        }
+                    }
+                }
+                
+                if device_found {
+                    info!("Device found at address: 0x{:02X}", addr);
+                    let _ = found_addresses.push(addr);
+                }
             }
+            
+            info!("I2C1 scan complete: {} addresses scanned, {} errors, {} devices found", 
+                  scan_count, error_count, found_addresses.len());
         } else {
             warn!("I2C1 not initialized");
         }
@@ -205,6 +262,67 @@ impl I2cScanner {
         }
         
         info!("I2C scan complete");
+    }
+    
+    /// Test specific I2C addresses that are commonly used by devices
+    pub fn test_common_addresses(&mut self) {
+        info!("Testing common I2C device addresses...");
+        
+        // Common I2C device addresses
+        let common_addresses: [(u8, &str); 18] = [
+            (0x1C, "Accelerometer (LIS3DH)"),
+            (0x1D, "Accelerometer (MMA8451)"),
+            (0x1E, "Magnetometer (HMC5883L)"),
+            (0x3C, "OLED Display (SSD1306)"),
+            (0x3D, "OLED Display (SSD1306 alt)"),
+            (0x40, "PCA9685 PWM driver"),
+            (0x48, "ADS1115 ADC"),
+            (0x49, "ADS1115 ADC alt"),
+            (0x4A, "ADS1115 ADC alt"),
+            (0x4B, "ADS1115 ADC alt"),
+            (0x50, "EEPROM"),
+            (0x51, "EEPROM alt"),
+            (0x57, "EEPROM alt"),
+            (0x68, "MPU6050/DS3231 RTC"),
+            (0x69, "MPU6050 alt"),
+            (0x70, "I2C Multiplexer"),
+            (0x76, "BME280 sensor"),
+            (0x77, "BME280/BMP280 sensor alt"),
+        ];
+        
+        for (addr, device_name) in &common_addresses {
+            // Test on I2C0
+            if let Some(ref mut i2c) = self.i2c0 {
+                match i2c.write(*addr, &[]) {
+                    Ok(_) => info!("I2C0: Device at 0x{:02X} ({})", addr, device_name),
+                    Err(_) => {
+                        // Try read instead
+                        let mut buffer = [0u8; 1];
+                        match i2c.read(*addr, &mut buffer) {
+                            Ok(_) => info!("I2C0: Device at 0x{:02X} ({}) - read only", addr, device_name),
+                            Err(_) => {} // No device
+                        }
+                    }
+                }
+            }
+            
+            // Test on I2C1
+            if let Some(ref mut i2c) = self.i2c1 {
+                match i2c.write(*addr, &[]) {
+                    Ok(_) => info!("I2C1: Device at 0x{:02X} ({})", addr, device_name),
+                    Err(_) => {
+                        // Try read instead
+                        let mut buffer = [0u8; 1];
+                        match i2c.read(*addr, &mut buffer) {
+                            Ok(_) => info!("I2C1: Device at 0x{:02X} ({}) - read only", addr, device_name),
+                            Err(_) => {} // No device
+                        }
+                    }
+                }
+            }
+        }
+        
+        info!("Common address test complete");
     }
 }
 
