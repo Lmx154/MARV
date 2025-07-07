@@ -1,233 +1,265 @@
-//! GPS Module for u-blox NEO M9N
-//! 
-//! This module provides basic UBX packet parsing for GPS data
+//! Simple GPS Module 
+//! Outputs one CSV message: GPS: MM/DD/YYYY, HH:MM:SS, LAT, LONG, ALT, SATS, FIX
 
+use rp235x_hal as hal;
+use hal::uart::{DataBits, StopBits, UartConfig, UartPeripheral, Enabled};
+use hal::gpio::{FunctionUart, Pin, bank0::{Gpio0, Gpio1}, PullDown};
+use hal::pac;
+use hal::Clock;
+use embedded_hal_nb::serial::Read;
 use defmt::*;
+use core::fmt::Write;
 
-/// Simple GPS data structure
-#[derive(Debug, Clone)]
+// UBX sync characters
+const UBX_SYNC_CHAR_1: u8 = 0xB5;
+const UBX_SYNC_CHAR_2: u8 = 0x62;
+
+// Simple GPS data structure
+#[derive(Default)]
 pub struct GpsData {
-    pub latitude: f64,   // degrees
-    pub longitude: f64,  // degrees
-    pub altitude: i32,   // millimeters above sea level
-    pub satellites: u8,  // number of satellites used
-    pub fix_valid: bool, // whether we have a valid GPS fix
-    // GPS time components
     pub year: u16,
     pub month: u8,
     pub day: u8,
     pub hour: u8,
     pub minute: u8,
     pub second: u8,
-}
-
-impl Default for GpsData {
-    fn default() -> Self {
-        Self {
-            latitude: 0.0,
-            longitude: 0.0,
-            altitude: 0,
-            satellites: 0,
-            fix_valid: false,
-            year: 1970,
-            month: 1,
-            day: 1,
-            hour: 0,
-            minute: 0,
-            second: 0,
-        }
-    }
+    pub latitude: i32,    // 1e-7 degrees
+    pub longitude: i32,   // 1e-7 degrees
+    pub altitude: i32,    // mm
+    pub satellites: u8,
+    pub fix_type: u8,
 }
 
 impl GpsData {
-    // Format display method removed - using direct formatting in main.rs
+    pub fn format_csv(&self) -> heapless::String<128> {
+        let mut output = heapless::String::new();
+        // Convert coordinates from 1e-7 degrees to more readable format
+        // Split into whole degrees and fractional parts
+        let lat_whole = self.latitude / 10_000_000;
+        let lat_frac = (self.latitude % 10_000_000).abs();
+        let lon_whole = self.longitude / 10_000_000;
+        let lon_frac = (self.longitude % 10_000_000).abs();
+        let alt_m = self.altitude / 1000; // Convert mm to meters
+        
+        let _ = core::write!(output, "{:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}°, {}.{:07}°, {}m, {} sats, fix:{}",
+            self.month, self.day, self.year,
+            self.hour, self.minute, self.second,
+            lat_whole, lat_frac, lon_whole, lon_frac, alt_m,
+            self.satellites, self.fix_type);
+        output
+    }
 }
 
-/// UBX packet parser
-pub struct UbxParser {
-    buffer: [u8; 256],
-    buffer_pos: usize,
-    state: ParserState,
+// Simple GPS module
+pub struct GpsModule {
+    uart: Option<UartPeripheral<Enabled, pac::UART0, (Pin<Gpio0, FunctionUart, PullDown>, Pin<Gpio1, FunctionUart, PullDown>)>>,
+    parser: UbxParser,
+    last_gps_data: GpsData,
 }
 
-#[derive(Clone, Copy)]
+impl Default for GpsModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GpsModule {
+    pub fn new() -> Self {
+        Self { 
+            uart: None,
+            parser: UbxParser::new(),
+            last_gps_data: GpsData::default(),
+        }
+    }
+    
+    pub fn init(
+        &mut self,
+        uart0: pac::UART0,
+        gpio0: Pin<hal::gpio::bank0::Gpio0, hal::gpio::FunctionNull, hal::gpio::PullDown>,
+        gpio1: Pin<hal::gpio::bank0::Gpio1, hal::gpio::FunctionNull, hal::gpio::PullDown>,
+        resets: &mut pac::RESETS,
+        clocks: &hal::clocks::ClocksManager,
+    ) -> Result<(), hal::uart::Error> {
+        let tx_pin = gpio0.into_function::<FunctionUart>();
+        let rx_pin = gpio1.into_function::<FunctionUart>();
+        
+        let uart_config = UartConfig::new(
+            hal::fugit::HertzU32::from_raw(38_400),
+            DataBits::Eight,
+            None,
+            StopBits::One,
+        );
+        
+        let uart = UartPeripheral::new(uart0, (tx_pin, rx_pin), resets)
+            .enable(uart_config, clocks.peripheral_clock.freq())?;
+        
+        self.uart = Some(uart);
+        Ok(())
+    }
+    
+    pub fn update(&mut self) {
+        if let Some(ref mut uart) = self.uart {
+            // Read bytes and parse
+            for _ in 0..50 { // Limit processing per update
+                match uart.read() {
+                    Ok(byte) => {
+                        if let Some(gps_data) = self.parser.parse_byte(byte) {
+                            self.last_gps_data = gps_data;
+                            // Output the simple CSV message
+                            info!("GPS: {}", self.last_gps_data.format_csv().as_str());
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+    
+    pub fn get_last_data(&self) -> &GpsData {
+        &self.last_gps_data
+    }
+}
+
+// Simple UBX parser states
+#[derive(PartialEq)]
 enum ParserState {
-    WaitingForSync1,
-    WaitingForSync2,
-    ReadingHeader,
-    ReadingPayload,
+    Sync1,
+    Sync2,
+    Header,
+    Payload,
+    Checksum,
+}
+
+pub struct UbxParser {
+    state: ParserState,
+    header: [u8; 4],  // class, id, len_low, len_high
+    payload: [u8; 92], // Only need NAV-PVT payload
+    header_idx: usize,
+    payload_idx: usize,
+    payload_len: u16,
+    checksum_a: u8,
+    checksum_b: u8,
+    calc_checksum_a: u8,
+    calc_checksum_b: u8,
+    checksum_idx: u8,  // Counter for checksum bytes
 }
 
 impl UbxParser {
     pub fn new() -> Self {
         Self {
-            buffer: [0; 256],
-            buffer_pos: 0,
-            state: ParserState::WaitingForSync1,
+            state: ParserState::Sync1,
+            header: [0; 4],
+            payload: [0; 92],
+            header_idx: 0,
+            payload_idx: 0,
+            payload_len: 0,
+            checksum_a: 0,
+            checksum_b: 0,
+            calc_checksum_a: 0,
+            calc_checksum_b: 0,
+            checksum_idx: 0,
         }
     }
-
-    /// Process incoming UART byte and return GPS data if a complete packet is parsed
-    pub fn process_byte(&mut self, byte: u8) -> Option<GpsData> {
+    
+    fn reset(&mut self) {
+        self.state = ParserState::Sync1;
+        self.header_idx = 0;
+        self.payload_idx = 0;
+        self.payload_len = 0;
+        self.calc_checksum_a = 0;
+        self.calc_checksum_b = 0;
+        self.checksum_idx = 0;
+    }
+    
+    fn add_checksum(&mut self, byte: u8) {
+        self.calc_checksum_a = self.calc_checksum_a.wrapping_add(byte);
+        self.calc_checksum_b = self.calc_checksum_b.wrapping_add(self.calc_checksum_a);
+    }
+    
+    pub fn parse_byte(&mut self, byte: u8) -> Option<GpsData> {
         match self.state {
-            ParserState::WaitingForSync1 => {
-                if byte == 0xB5 {  // UBX sync char 1
-                    self.buffer[0] = byte;
-                    self.buffer_pos = 1;
-                    self.state = ParserState::WaitingForSync2;
+            ParserState::Sync1 => {
+                if byte == UBX_SYNC_CHAR_1 {
+                    self.state = ParserState::Sync2;
                 }
             }
-            ParserState::WaitingForSync2 => {
-                if byte == 0x62 {  // UBX sync char 2
-                    self.buffer[1] = byte;
-                    self.buffer_pos = 2;
-                    self.state = ParserState::ReadingHeader;
+            ParserState::Sync2 => {
+                if byte == UBX_SYNC_CHAR_2 {
+                    self.state = ParserState::Header;
+                    self.header_idx = 0;
+                    self.calc_checksum_a = 0;
+                    self.calc_checksum_b = 0;
                 } else {
-                    self.state = ParserState::WaitingForSync1;
+                    self.reset();
+                    if byte == UBX_SYNC_CHAR_1 {
+                        self.state = ParserState::Sync2;
+                    }
                 }
             }
-            ParserState::ReadingHeader => {
-                self.buffer[self.buffer_pos] = byte;
-                self.buffer_pos += 1;
+            ParserState::Header => {
+                self.header[self.header_idx] = byte;
+                self.add_checksum(byte);
+                self.header_idx += 1;
                 
-                if self.buffer_pos >= 6 {  // We have class, id, and length
-                    let payload_length = u16::from_le_bytes([self.buffer[4], self.buffer[5]]) as usize;
+                if self.header_idx == 4 {
+                    self.payload_len = (self.header[3] as u16) << 8 | (self.header[2] as u16);
                     
-                    if payload_length > 200 {  // Sanity check - too big
-                        self.state = ParserState::WaitingForSync1;
-                        return None;
+                    // Only parse NAV-PVT messages (class 0x01, id 0x07, length 92)
+                    if self.header[0] == 0x01 && self.header[1] == 0x07 && self.payload_len == 92 {
+                        self.state = ParserState::Payload;
+                        self.payload_idx = 0;
+                    } else {
+                        self.reset();
                     }
-                    
-                    if payload_length == 0 {
-                        // No payload, check if this is a message we care about
-                        self.state = ParserState::WaitingForSync1;
-                        return None;
-                    }
-                    
-                    self.state = ParserState::ReadingPayload;
                 }
             }
-            ParserState::ReadingPayload => {
-                self.buffer[self.buffer_pos] = byte;
-                self.buffer_pos += 1;
+            ParserState::Payload => {
+                self.payload[self.payload_idx] = byte;
+                self.add_checksum(byte);
+                self.payload_idx += 1;
                 
-                let payload_length = u16::from_le_bytes([self.buffer[4], self.buffer[5]]) as usize;
-                let expected_total_length = 6 + payload_length + 2; // header + payload + checksum
-                
-                if self.buffer_pos >= expected_total_length {
-                    // We have a complete packet, try to parse it
-                    let result = self.parse_packet();
-                    self.state = ParserState::WaitingForSync1;
-                    return result;
+                if self.payload_idx as u16 == self.payload_len {
+                    self.state = ParserState::Checksum;
+                    self.checksum_idx = 0;  // Reset checksum counter
+                }
+            }
+            ParserState::Checksum => {
+                if self.checksum_idx == 0 {
+                    self.checksum_a = byte;
+                    self.checksum_idx = 1;
+                } else {
+                    self.checksum_b = byte;
+                    
+                    if self.calc_checksum_a == self.checksum_a && self.calc_checksum_b == self.checksum_b {
+                        let result = self.parse_nav_pvt();
+                        self.reset();
+                        return result;
+                    } else {
+                        self.reset();
+                    }
                 }
             }
         }
         None
     }
-
-    fn parse_packet(&self) -> Option<GpsData> {
-        if self.buffer_pos < 8 {
-            return None;
-        }
-
-        let class = self.buffer[2];
-        let id = self.buffer[3];
-        let payload_length = u16::from_le_bytes([self.buffer[4], self.buffer[5]]) as usize;
-
-        // Check if we have enough data
-        if self.buffer_pos < 6 + payload_length + 2 {
-            return None;
-        }
-
-        // Verify checksum
-        if !self.verify_checksum(payload_length) {
-            warn!("UBX checksum failed");
-            return None;
-        }
-
-        // Parse NAV-PVT message (0x01, 0x07)
-        if class == 0x01 && id == 0x07 && payload_length >= 84 {
-            return self.parse_nav_pvt();
-        }
-
-        None
-    }
-
-    fn verify_checksum(&self, payload_length: usize) -> bool {
-        let mut ck_a = 0u8;
-        let mut ck_b = 0u8;
-
-        // Calculate checksum over class, id, length, and payload
-        for i in 2..(6 + payload_length) {
-            ck_a = ck_a.wrapping_add(self.buffer[i]);
-            ck_b = ck_b.wrapping_add(ck_a);
-        }
-
-        let expected_ck_a = self.buffer[6 + payload_length];
-        let expected_ck_b = self.buffer[6 + payload_length + 1];
-
-        ck_a == expected_ck_a && ck_b == expected_ck_b
-    }
-
+    
     fn parse_nav_pvt(&self) -> Option<GpsData> {
-        let payload_start = 6;
+        let p = &self.payload;
+        let mut gps = GpsData::default();
         
-        // Extract fix type (offset 20 in payload)
-        let fix_type = self.buffer[payload_start + 20];
-        let fix_valid = fix_type >= 2; // 2D or 3D fix
+        // Extract basic time/position data from UBX-NAV-PVT
+        gps.year = u16::from_le_bytes([p[4], p[5]]);
+        gps.month = p[6];
+        gps.day = p[7];
+        gps.hour = p[8];
+        gps.minute = p[9];
+        gps.second = p[10];
+        gps.fix_type = p[20];
+        gps.satellites = p[23];
+        gps.longitude = i32::from_le_bytes([p[24], p[25], p[26], p[27]]);
+        gps.latitude = i32::from_le_bytes([p[28], p[29], p[30], p[31]]);
+        gps.altitude = i32::from_le_bytes([p[36], p[37], p[38], p[39]]);
         
-        // Extract number of satellites (offset 23 in payload)
-        let satellites = self.buffer[payload_start + 23];
-        
-        // Extract longitude (offset 24, 4 bytes, little-endian, scaled by 1e-7)
-        let lon_raw = i32::from_le_bytes([
-            self.buffer[payload_start + 24],
-            self.buffer[payload_start + 25],
-            self.buffer[payload_start + 26],
-            self.buffer[payload_start + 27],
-        ]);
-        let longitude = (lon_raw as f64) * 1e-7;
-        
-        // Extract latitude (offset 28, 4 bytes, little-endian, scaled by 1e-7)
-        let lat_raw = i32::from_le_bytes([
-            self.buffer[payload_start + 28],
-            self.buffer[payload_start + 29],
-            self.buffer[payload_start + 30],
-            self.buffer[payload_start + 31],
-        ]);
-        let latitude = (lat_raw as f64) * 1e-7;
-        
-        // Extract height above sea level (offset 36, 4 bytes, little-endian, in mm)
-        let altitude = i32::from_le_bytes([
-            self.buffer[payload_start + 36],
-            self.buffer[payload_start + 37],
-            self.buffer[payload_start + 38],
-            self.buffer[payload_start + 39],
-        ]);
-
-        // Extract time of fix (UTC) (offset 40, 8 bytes, little-endian)
-        let year = u16::from_le_bytes([
-            self.buffer[payload_start + 40],
-            self.buffer[payload_start + 41],
-        ]);
-        let month = self.buffer[payload_start + 42];
-        let day = self.buffer[payload_start + 43];
-        let hour = self.buffer[payload_start + 44];
-        let minute = self.buffer[payload_start + 45];
-        let second = self.buffer[payload_start + 46];
-
-        Some(GpsData {
-            latitude,
-            longitude,
-            altitude,
-            satellites,
-            fix_valid,
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-        })
+        Some(gps)
     }
 }
