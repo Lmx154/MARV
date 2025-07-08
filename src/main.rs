@@ -1,13 +1,3 @@
-//! # Basic Raspberry Pi Pico 2 Example
-//!
-//! This application demonstrates basic functionality on the RP2350
-//! including LED blinking and system time tracking.
-//!
-//! ## Status:
-//! - ✅ no_std embedded environment
-//! - ✅ Basic LED blinking functionality
-//! - ✅ System time tracking
-
 #![no_std]
 #![no_main]
 
@@ -34,7 +24,8 @@ use hardware::{HARDWARE, constants};
 // Import sensors module
 mod sensors;
 use sensors::gps::GpsModule;
-use sensors::pcf8563::{Pcf8563, DateTime};
+use sensors::pcf8563::DateTime;
+use sensors::sensor_manager::SensorCollection;
 
 // Import scripts module
 mod scripts;
@@ -48,9 +39,7 @@ pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 /// Entry point to our bare-metal application.
 #[hal::entry]
 fn main() -> ! {
-    info!("Starting RustyPi on RP2350!");
-    info!("Hello, World! 🦀");
-    
+
     // Validate hardware configuration first
     if let Err(e) = HARDWARE.validate_configuration() {
         error!("Hardware configuration error: {}", e);
@@ -166,51 +155,53 @@ fn main() -> ! {
     info!("Testing common I2C device addresses...");
     i2c_scanner.test_common_addresses();
     
-    // Initialize PCF8563 RTC using I2C0 (detected at address 0x51)
-    let mut rtc = match i2c_scanner.take_i2c0() {
+    // Initialize I2C Sensor Collection for shared bus (PCF8563 RTC + BMP388 barometer)
+    let mut i2c_sensors = match i2c_scanner.take_i2c0() {
         Some(i2c0) => {
-            let mut pcf8563 = Pcf8563::new(i2c0);
-            match pcf8563.init() {
+            let mut sensor_collection = SensorCollection::new(i2c0);
+            match sensor_collection.init_all_sensors(&mut timer) {
                 Ok(()) => {
-                    info!("PCF8563 RTC initialized successfully on I2C0");
+                    info!("I2C sensor collection initialized successfully");
                     
-                    // Perform diagnostic read to understand the current state
-                    if let Err(e) = pcf8563.diagnostic_read() {
-                        warn!("Failed to perform PCF8563 diagnostic: {:?}", e);
-                    }
-                    
-                    // Check if RTC is running and read current time
-                    match pcf8563.is_running() {
-                        Ok(true) => {
-                            match pcf8563.read_datetime() {
-                                Ok(datetime) => {
-                                    let (_, month, day, year, hour, minute, second) = datetime.format_for_defmt();
-                                    info!("PCF8563 current time: {:02}/{:02}/{:04} {:02}:{:02}:{:02}", 
-                                          month, day, year, hour, minute, second);
-                                }
-                                Err(e) => {
-                                    warn!("Failed to read PCF8563 time: {:?}", e);
-                                }
+                    // Check which sensors are available
+                    if sensor_collection.is_rtc_available() {
+                        match sensor_collection.read_rtc_datetime() {
+                            Ok(datetime) => {
+                                let (_, month, day, year, hour, minute, second) = datetime.format_for_defmt();
+                                info!("PCF8563 current time: {:02}/{:02}/{:04} {:02}:{:02}:{:02}", 
+                                      month, day, year, hour, minute, second);
+                            }
+                            Err(e) => {
+                                warn!("Failed to read PCF8563 time: {:?}", e);
                             }
                         }
-                        Ok(false) => {
-                            warn!("PCF8563 clock is not running - will be set from GPS when available");
-                        }
-                        Err(e) => {
-                            warn!("Failed to check PCF8563 status: {:?}", e);
+                    }
+                    
+                    if sensor_collection.is_barometer_available() {
+                        match sensor_collection.read_barometer(&mut timer) {
+                            Ok(data) => {
+                                let (temp_whole, temp_frac) = data.temperature_celsius();
+                                let (press_whole, press_frac) = data.pressure_hpa();
+                                let (alt_whole, alt_frac) = data.altitude_meters();
+                                info!("BMP388 initial reading: {}.{:02}°C, {}.{:02} hPa, {}.{:02}m", 
+                                      temp_whole, temp_frac, press_whole, press_frac, alt_whole, alt_frac);
+                            }
+                            Err(e) => {
+                                warn!("Failed to read initial BMP388 measurement: {:?}", e);
+                            }
                         }
                     }
                     
-                    Some(pcf8563)
+                    Some(sensor_collection)
                 }
                 Err(e) => {
-                    error!("Failed to initialize PCF8563 RTC: {:?}", e);
+                    error!("Failed to initialize I2C sensor collection: {:?}", e);
                     None
                 }
             }
         }
         None => {
-            error!("I2C0 not available for PCF8563 RTC");
+            error!("I2C0 not available for sensor manager");
             None
         }
     };
@@ -237,29 +228,25 @@ fn main() -> ! {
         // Sync RTC with GPS time when we have a good fix and haven't synced yet
         let gps_data = gps.get_last_data();
         if !rtc_synced_to_gps && gps_data.fix_type == 3 && gps_data.year != 0 {
-            if let Some(ref mut rtc_device) = rtc {
-                // Create DateTime from GPS data
-                let mut gps_datetime = DateTime::from_gps(gps_data);
-                gps_datetime.calculate_weekday();
-                
-                match rtc_device.write_datetime(&gps_datetime) {
-                    Ok(()) => {
-                        rtc_synced_to_gps = true;
-                        info!("PCF8563 RTC synchronized with GPS time! GPS: {:02}/{:02}/{:04} {:02}:{:02}:{:02}", 
-                              gps_data.month, gps_data.day, gps_data.year,
-                              gps_data.hour, gps_data.minute, gps_data.second);
-                        
-                        // Give RTC a moment to stabilize after write
-                        timer.delay_us(10_000); // 10ms delay
-                        
-                        // Perform diagnostic read after GPS sync to see what happened
-                        info!("=== Post-GPS Sync Diagnostic ===");
-                        if let Err(e) = rtc_device.diagnostic_read() {
-                            warn!("Failed to perform post-sync diagnostic: {:?}", e);
+            if let Some(ref mut sensor_mgr) = i2c_sensors {
+                if sensor_mgr.is_rtc_available() {
+                    // Create DateTime from GPS data
+                    let mut gps_datetime = DateTime::from_gps(gps_data);
+                    gps_datetime.calculate_weekday();
+                    
+                    match sensor_mgr.write_rtc_datetime(&gps_datetime) {
+                        Ok(()) => {
+                            rtc_synced_to_gps = true;
+                            info!("PCF8563 RTC synchronized with GPS time! GPS: {:02}/{:02}/{:04} {:02}:{:02}:{:02}", 
+                                  gps_data.month, gps_data.day, gps_data.year,
+                                  gps_data.hour, gps_data.minute, gps_data.second);
+                            
+                            // Give RTC a moment to stabilize after write
+                            timer.delay_us(10_000); // 10ms delay
                         }
-                    }
-                    Err(e) => {
-                        error!("Failed to sync RTC with GPS: {:?}", e);
+                        Err(e) => {
+                            error!("Failed to sync RTC with GPS: {:?}", e);
+                        }
                     }
                 }
             }
@@ -276,7 +263,7 @@ fn main() -> ! {
         
         // Print system status every 10,000 iterations (approximately 1 second)
         if counter % constants::STATUS_PRINT_INTERVAL == 0 {
-            print_system_status(&mut rtc, &gps);
+            print_system_status(&mut i2c_sensors, &gps, &mut timer);
         }
         
         // Small delay to prevent excessive polling
@@ -284,26 +271,36 @@ fn main() -> ! {
     }
 }
 
-/// Print system status including GPS and RTC information
-/// Format: "SYS RTC: MM/DD/YYYY, HH:MM:SS GPS: MM/DD/YYYY, HH:MM:SS, LAT, LONG, ALT, SATS, FIX"
-fn print_system_status(rtc: &mut Option<Pcf8563<hal::I2C<hal::pac::I2C0, (hal::gpio::Pin<hal::gpio::bank0::Gpio4, hal::gpio::FunctionI2C, hal::gpio::PullUp>, hal::gpio::Pin<hal::gpio::bank0::Gpio5, hal::gpio::FunctionI2C, hal::gpio::PullUp>)>>>, gps: &GpsModule) {
+/// Print system status including GPS, RTC, and Barometer information
+/// Format: "SYS RTC: MM/DD/YYYY, HH:MM:SS GPS: MM/DD/YYYY, HH:MM:SS, LAT, LONG, ALT, SATS, FIX BAR: TEMP°C, PRESS hPa, ALT m"
+fn print_system_status(
+    i2c_sensors: &mut Option<SensorCollection<hal::I2C<hal::pac::I2C0, (hal::gpio::Pin<hal::gpio::bank0::Gpio4, hal::gpio::FunctionI2C, hal::gpio::PullUp>, hal::gpio::Pin<hal::gpio::bank0::Gpio5, hal::gpio::FunctionI2C, hal::gpio::PullUp>)>>>,
+    gps: &GpsModule,
+    timer: &mut hal::Timer<hal::timer::CopyableTimer0>
+) {
     let gps_data = gps.get_last_data();
     
-    // Try to read current time from hardware RTC
-    let (rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second) = if let Some(ref mut rtc_device) = rtc {
-        match rtc_device.read_datetime() {
-            Ok(datetime) => {
-                (datetime.month, datetime.day, datetime.year, datetime.hour, datetime.minute, datetime.second)
+    // Try to read current time from I2C sensor manager (PCF8563 RTC)
+    let (rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second) = if let Some(ref mut sensor_mgr) = i2c_sensors {
+        if sensor_mgr.is_rtc_available() {
+            match sensor_mgr.read_rtc_datetime() {
+                Ok(datetime) => {
+                    let (_, month, day, year, hour, minute, second) = datetime.format_for_defmt();
+                    (month, day, year, hour, minute, second)
+                }
+                Err(_) => {
+                    // RTC read failed, use fallback time
+                    warn!("Failed to read RTC, using fallback time");
+                    (1, 7, 2025, 0, 0, 0) // Current date with 00:00:00 time
+                }
             }
-            Err(_) => {
-                // RTC read failed, use fallback time
-                warn!("Failed to read RTC, using fallback time");
-                (7, 7, 2025, 0, 0, 0) // Current date with 00:00:00 time
-            }
+        } else {
+            // No RTC available in sensor manager
+            (1, 7, 2025, 0, 0, 0) // Current date with 00:00:00 time
         }
     } else {
-        // No RTC available, use fallback time
-        (7, 7, 2025, 0, 0, 0) // Current date with 00:00:00 time
+        // No sensor manager available, use fallback time
+        (1, 7, 2025, 0, 0, 0) // Current date with 00:00:00 time
     };
     
     // Format GPS coordinates in human-readable format
@@ -313,12 +310,48 @@ fn print_system_status(rtc: &mut Option<Pcf8563<hal::I2C<hal::pac::I2C0, (hal::g
     let lon_frac = (gps_data.longitude % 10_000_000).abs();
     let alt_m = gps_data.altitude / 1000; // Convert mm to meters
     
-    info!(
-        "SYS RTC: {:02}/{:02}/{:04}, {:02}:{:02}:{:02} GPS: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}, {}.{:07}, {}m, {} sats, fix:{}", 
-        rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second,
-        gps_data.month, gps_data.day, gps_data.year, gps_data.hour, gps_data.minute, gps_data.second,
-        lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type
-    );
+    // Try to read barometer data from I2C sensor collection (BMP388)
+    if let Some(ref mut sensor_mgr) = i2c_sensors {
+        if sensor_mgr.is_barometer_available() {
+            match sensor_mgr.read_barometer(timer) {
+                Ok(data) => {
+                    let (temp_whole, temp_frac) = data.temperature_celsius();
+                    let (press_whole, press_frac) = data.pressure_hpa();
+                    let (alt_whole, alt_frac) = data.altitude_meters();
+                    
+                    info!(
+                        "SYS RTC: {:02}/{:02}/{:04}, {:02}:{:02}:{:02} GPS: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}, {}.{:07}, {}m, {} sats, fix:{} BAR: {}.{:02}°C, {}.{:02} hPa, {}.{:02}m", 
+                        rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second,
+                        gps_data.month, gps_data.day, gps_data.year, gps_data.hour, gps_data.minute, gps_data.second,
+                        lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type,
+                        temp_whole, temp_frac, press_whole, press_frac, alt_whole, alt_frac
+                    );
+                }
+                Err(_) => {
+                    info!(
+                        "SYS RTC: {:02}/{:02}/{:04}, {:02}:{:02}:{:02} GPS: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}, {}.{:07}, {}m, {} sats, fix:{} BAR: N/A", 
+                        rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second,
+                        gps_data.month, gps_data.day, gps_data.year, gps_data.hour, gps_data.minute, gps_data.second,
+                        lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type
+                    );
+                }
+            }
+        } else {
+            info!(
+                "SYS RTC: {:02}/{:02}/{:04}, {:02}:{:02}:{:02} GPS: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}, {}.{:07}, {}m, {} sats, fix:{} BAR: not available", 
+                rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second,
+                gps_data.month, gps_data.day, gps_data.year, gps_data.hour, gps_data.minute, gps_data.second,
+                lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type
+            );
+        }
+    } else {
+        info!(
+            "SYS RTC: {:02}/{:02}/{:04}, {:02}:{:02}:{:02} GPS: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}, {}.{:07}, {}m, {} sats, fix:{} BAR: not available", 
+            rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second,
+            gps_data.month, gps_data.day, gps_data.year, gps_data.hour, gps_data.minute, gps_data.second,
+            lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type
+        );
+    }
 }
 
 /// Program metadata for `picotool info`

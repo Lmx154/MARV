@@ -4,3 +4,5 @@
 
 pub mod gps;
 pub mod pcf8563;
+pub mod bmp388;
+pub mod sensor_manager;
