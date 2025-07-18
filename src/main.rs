@@ -57,7 +57,7 @@ mod app {
             &mut resets,
         );
 
-        let mut led_pin = pins.gpio25.into_push_pull_output();
+        let led_pin = pins.gpio25.into_pull_type::<PullNone>().into_push_pull_output();
 
         (Shared {}, Local { timer, led_pin })
     }
