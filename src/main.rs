@@ -12,8 +12,12 @@ use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
 use rtic::app;
 
+// Additional imports for corrected types
+use hal::gpio::{FunctionSioOutput, Pin, bank0::Gpio25, PullNone};
+use hal::timer::{Timer, CopyableTimer0};
+
 // RTIC application configuration
-#[app(device = hal::pac, peripherals = true, dispatchers = [TIMER_IRQ_0])]
+#[app(device = hal::pac, peripherals = true, dispatchers = [TIMER0_IRQ_0])]
 mod app {
     use super::*;
 
@@ -22,8 +26,8 @@ mod app {
 
     #[local]
     struct Local {
-        timer: hal::Timer,
-        led_pin: hal::gpio::bank0::Gpio25<hal::gpio::Output<hal::gpio::PushPull>>,
+        timer: Timer<CopyableTimer0>,
+        led_pin: Pin<Gpio25, FunctionSioOutput, PullNone>,
     }
 
     #[init]
@@ -42,7 +46,7 @@ mod app {
         )
         .unwrap();
 
-        let mut timer = hal::Timer::new_timer0(cx.device.TIMER0, &mut resets, &clocks);
+        let timer = Timer::new_timer0(cx.device.TIMER0, &mut resets, &clocks);
 
         let sio = hal::Sio::new(cx.device.SIO);
 
