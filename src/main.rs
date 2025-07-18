@@ -10,60 +10,70 @@ use rp235x_hal as hal;
 // Some things we need
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
+use rtic::app;
 
-/// Tell the Boot ROM about our application
-#[link_section = ".start_block"]
-#[used]
-pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
+// RTIC application configuration
+#[app(device = hal::pac, peripherals = true, dispatchers = [TIMER_IRQ_0])]
+mod app {
+    use super::*;
 
-/// Entry point to our bare-metal application.
-#[hal::entry]
-fn main() -> ! {
-    // Grab our singleton objects
-    let mut pac = hal::pac::Peripherals::take().unwrap();
+    #[shared]
+    struct Shared {}
 
-    // Set up the watchdog driver - needed by the clock setup code
-    let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
+    #[local]
+    struct Local {
+        timer: hal::Timer,
+        led_pin: hal::gpio::bank0::Gpio25<hal::gpio::Output<hal::gpio::PushPull>>,
+    }
 
-    // Configure the clocks
-    let clocks = hal::clocks::init_clocks_and_plls(
-        12_000_000u32, // 12 MHz external crystal
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .unwrap();
+    #[init]
+    fn init(cx: init::Context) -> (Shared, Local) {
+        let mut resets = cx.device.RESETS;
+        let mut watchdog = hal::Watchdog::new(cx.device.WATCHDOG);
 
-    // Create a timer for delays
-    let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
+        let clocks = hal::clocks::init_clocks_and_plls(
+            12_000_000u32, // 12 MHz external crystal
+            cx.device.XOSC,
+            cx.device.CLOCKS,
+            cx.device.PLL_SYS,
+            cx.device.PLL_USB,
+            &mut resets,
+            &mut watchdog,
+        )
+        .unwrap();
 
-    // The single-cycle I/O block controls our GPIO pins
-    let sio = hal::Sio::new(pac.SIO);
+        let mut timer = hal::Timer::new_timer0(cx.device.TIMER0, &mut resets, &clocks);
 
-    // Set the pins to their default state
-    let pins = hal::gpio::Pins::new(
-        pac.IO_BANK0,
-        pac.PADS_BANK0,
-        sio.gpio_bank0,
-        &mut pac.RESETS,
-    );
+        let sio = hal::Sio::new(cx.device.SIO);
 
-    // Configure GPIO25 as an output for the LED
-    let mut led_pin = pins.gpio25.into_push_pull_output();
-    
-    // Main loop - blink the LED
-    loop {
-        // Turn LED on
-        led_pin.set_high().unwrap();
-        // Wait for 500ms
-        timer.delay_ms(100);
-        
-        // Turn LED off
-        led_pin.set_low().unwrap();
-        // Wait for 500ms
-        timer.delay_ms(100);
+        let pins = hal::gpio::Pins::new(
+            cx.device.IO_BANK0,
+            cx.device.PADS_BANK0,
+            sio.gpio_bank0,
+            &mut resets,
+        );
+
+        let mut led_pin = pins.gpio25.into_push_pull_output();
+
+        (Shared {}, Local { timer, led_pin })
+    }
+
+    #[idle(local = [timer, led_pin])]
+    fn idle(cx: idle::Context) -> ! {
+        let timer = cx.local.timer;
+        let led_pin = cx.local.led_pin;
+
+        // Main loop - blink the LED
+        loop {
+            // Turn LED on
+            led_pin.set_high().unwrap();
+            // Wait for 500ms
+            timer.delay_ms(100);
+
+            // Turn LED off
+            led_pin.set_low().unwrap();
+            // Wait for 500ms
+            timer.delay_ms(100);
+        }
     }
 }
