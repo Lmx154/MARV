@@ -19,7 +19,7 @@ defmt-rtt = "0.4.1"
 panic-halt = "0.2.0"
 heapless = "0.8.0"
 rp235x-hal = { version = "0.3.0", features = ["binary-info", "critical-section-impl", "rt", "defmt"] }
-rtic = { version = "2.1.1", features = ["thumbv8m.main-backend"] }
+rtic = { version = "2.1.1", features = ["thumbv8main-backend"] }
 
 [profile.dev]
 debug = 2

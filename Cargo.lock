@@ -519,6 +519,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6bc68b1fa2eefbb7ad6747b299b79c8fca92163dfa46f0e279f39109cf272186"
 dependencies = [
  "bare-metal 1.0.0",
+ "cortex-m",
  "critical-section",
  "portable-atomic",
  "rtic-core",
