@@ -16,6 +16,11 @@ use rtic::app;
 use hal::gpio::{FunctionSioOutput, Pin, bank0::Gpio25, PullNone};
 use hal::timer::{Timer, CopyableTimer0};
 
+// Tell the Boot ROM about our application
+#[link_section = ".start_block"]
+#[used]
+pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
+
 // RTIC application configuration
 #[app(device = hal::pac, peripherals = true, dispatchers = [TIMER0_IRQ_0])]
 mod app {
@@ -71,13 +76,13 @@ mod app {
         loop {
             // Turn LED on
             led_pin.set_high().unwrap();
-            // Wait for 500ms
-            timer.delay_ms(100);
+            // Wait for 100ms
+            timer.delay_ms(500);
 
             // Turn LED off
             led_pin.set_low().unwrap();
-            // Wait for 500ms
-            timer.delay_ms(100);
+            // Wait for 100ms
+            timer.delay_ms(500);
         }
     }
 }
