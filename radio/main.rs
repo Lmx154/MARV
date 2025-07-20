@@ -51,14 +51,15 @@ mod app {
     #[shared]
     struct Shared {
         mcp2515: Mcp2515<SpiWrapper<Spi<hal::spi::Enabled, hal::pac::SPI0, (Pin<hal::gpio::bank0::Gpio19, FunctionSpi, PullUp>, Pin<hal::gpio::bank0::Gpio16, FunctionSpi, PullUp>, Pin<hal::gpio::bank0::Gpio18, FunctionSpi, PullUp>), 8>>, Pin<hal::gpio::bank0::Gpio17, FunctionSioOutput, PullUp>, Timer<CopyableTimer1>>,
+        token: bool, // Shared token state
     }
 
     #[local]
     struct Local {
         timer: Timer<CopyableTimer0>,
-        led_pin: Pin<Gpio25, FunctionSioOutput, PullNone>, // Corrected to GPIO25
-        receive_counter: u32,
+        led_pin: Pin<Gpio25, FunctionSioOutput, PullNone>,
         error_count: u32,
+        hold_timer: u32,
     }
 
     #[init]
@@ -86,7 +87,8 @@ mod app {
             &mut resets,
         );
 
-        let mut led_pin = pins.gpio25.into_pull_type::<PullNone>().into_push_pull_output(); // Corrected to GPIO25
+        let mut led_pin = pins.gpio25.into_pull_type::<PullNone>().into_push_pull_output();
+        led_pin.set_low().unwrap(); // Start with LED off (not holding token)
         let spi_sclk = pins.gpio18.into_pull_type::<PullUp>().into_function::<FunctionSpi>();
         let spi_mosi = pins.gpio19.into_pull_type::<PullUp>().into_function::<FunctionSpi>();
         let spi_miso = pins.gpio16.into_pull_type::<PullUp>().into_function::<FunctionSpi>();
@@ -147,23 +149,48 @@ mod app {
         }
 
         info!("Radio initialization complete - starting main loop");
-        (Shared { mcp2515 }, Local { timer, led_pin, receive_counter: 0, error_count: 0 })
+        (Shared { mcp2515, token: false }, Local { timer, led_pin, error_count: 0, hold_timer: 0 })
     }
 
-    #[idle(shared = [mcp2515], local = [timer, led_pin, receive_counter, error_count])]
+    #[idle(shared = [mcp2515, token], local = [timer, led_pin, error_count, hold_timer])]
     fn idle(mut cx: idle::Context) -> ! {
         let timer = cx.local.timer;
         let led_pin = cx.local.led_pin;
-        let receive_counter = cx.local.receive_counter;
         let error_count = cx.local.error_count;
+        let hold_timer = cx.local.hold_timer;
 
         info!("Radio entering main loop - monitoring CAN bus");
         loop {
-            // Debug blink to confirm loop execution
-            led_pin.set_high().unwrap();
-            timer.delay_ms(500);
-            led_pin.set_low().unwrap();
-            timer.delay_ms(500);
+            cx.shared.token.lock(|token| {
+                if *token {
+                    led_pin.set_high().unwrap();
+                    *hold_timer += 1;
+                    if *hold_timer >= 40 { // 2 seconds (40 * 50ms)
+                        *hold_timer = 0;
+                        cx.shared.mcp2515.lock(|mcp2515| {
+                            let msg = CanMessage {
+                                id: 0x400, // Pass from Radio to FC
+                                dlc: 0,
+                                data: [0; 8],
+                                is_extended: false,
+                            };
+                            match mcp2515.send_message(&msg) {
+                                Ok(()) => {
+                                    info!("Radio: Passed token to FC");
+                                    *token = false;
+                                    led_pin.set_low().unwrap();
+                                }
+                                Err(e) => {
+                                    error!("Radio: Failed to pass token: {:?}", e);
+                                    *error_count += 1;
+                                }
+                            }
+                        });
+                    }
+                } else {
+                    led_pin.set_low().unwrap();
+                }
+            });
 
             cx.shared.mcp2515.lock(|mcp2515| {
                 match mcp2515.get_error_flags() {
@@ -190,30 +217,10 @@ mod app {
                     Ok(true) => {
                         match mcp2515.receive_message() {
                             Ok(Some(msg)) => {
-                                *receive_counter += 1;
-                                let received_counter = (msg.data[0] as u32) | ((msg.data[1] as u32) << 8) | ((msg.data[2] as u32) << 16) | ((msg.data[3] as u32) << 24);
-                                info!("Radio: Received message #{}, ID=0x{:x}, counter={}", *receive_counter, msg.id, received_counter);
-                                let response_counter = received_counter + 1;
-                                let response_msg = CanMessage {
-                                    id: 0x200,
-                                    dlc: 4,
-                                    data: [response_counter as u8, (response_counter >> 8) as u8, (response_counter >> 16) as u8, (response_counter >> 24) as u8, 0, 0, 0, 0],
-                                    is_extended: false,
-                                };
-                                match mcp2515.send_message(&response_msg) {
-                                    Ok(()) => {
-                                        info!("Radio: Sent response with counter={}", response_counter);
-                                        for _ in 0..3 {
-                                            led_pin.set_high().unwrap();
-                                            timer.delay_ms(100);
-                                            led_pin.set_low().unwrap();
-                                            timer.delay_ms(100);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Radio: Failed to send response: {:?}", e);
-                                        *error_count += 1;
-                                    }
+                                if msg.id == 0x300 { // Pass from FC to Radio
+                                    info!("Radio: Received token from FC");
+                                    cx.shared.token.lock(|token| *token = true);
+                                    *hold_timer = 0; // Reset hold timer on receive
                                 }
                             }
                             Ok(None) => {}
@@ -231,7 +238,7 @@ mod app {
                 }
             });
 
-            timer.delay_ms(50); // Reduced for faster polling
+            timer.delay_ms(50);
         }
     }
 }

@@ -51,14 +51,15 @@ mod app {
     #[shared]
     struct Shared {
         mcp2515: Mcp2515<SpiWrapper<Spi<hal::spi::Enabled, hal::pac::SPI1, (Pin<hal::gpio::bank0::Gpio11, FunctionSpi, PullUp>, Pin<hal::gpio::bank0::Gpio12, FunctionSpi, PullUp>, Pin<hal::gpio::bank0::Gpio10, FunctionSpi, PullUp>), 8>>, Pin<hal::gpio::bank0::Gpio13, FunctionSioOutput, PullUp>, Timer<CopyableTimer1>>,
+        token: bool, // Shared token state
     }
 
     #[local]
     struct Local {
         timer: Timer<CopyableTimer0>,
         led_pin: Pin<Gpio25, FunctionSioOutput, PullNone>,
-        send_counter: u32,
         error_count: u32,
+        hold_timer: u32,
     }
 
     #[init]
@@ -87,6 +88,7 @@ mod app {
         );
 
         let mut led_pin = pins.gpio25.into_pull_type::<PullNone>().into_push_pull_output();
+        led_pin.set_high().unwrap(); // Start with LED on (holding token)
         let spi_sclk = pins.gpio10.into_pull_type::<PullUp>().into_function::<FunctionSpi>();
         let spi_mosi = pins.gpio11.into_pull_type::<PullUp>().into_function::<FunctionSpi>();
         let spi_miso = pins.gpio12.into_pull_type::<PullUp>().into_function::<FunctionSpi>();
@@ -140,46 +142,48 @@ mod app {
         }
 
         info!("FC initialization complete - starting main loop");
-        (Shared { mcp2515 }, Local { timer, led_pin, send_counter: 0, error_count: 0 })
+        (Shared { mcp2515, token: true }, Local { timer, led_pin, error_count: 0, hold_timer: 0 })
     }
 
-    #[idle(shared = [mcp2515], local = [timer, led_pin, send_counter, error_count])]
+    #[idle(shared = [mcp2515, token], local = [timer, led_pin, error_count, hold_timer])]
     fn idle(mut cx: idle::Context) -> ! {
         let timer = cx.local.timer;
         let led_pin = cx.local.led_pin;
-        let send_counter = cx.local.send_counter;
         let error_count = cx.local.error_count;
+        let hold_timer = cx.local.hold_timer;
 
         info!("FC entering main loop - monitoring CAN bus");
-        let mut message_count = 0u32;
-        let mut send_timer = 0u32;
-
         loop {
-            send_timer += 1;
-            if send_timer >= 5 {
-                send_timer = 0;
-                *send_counter += 1;
-                let msg = CanMessage {
-                    id: 0x100,
-                    dlc: 4,
-                    data: [*send_counter as u8, (*send_counter >> 8) as u8, (*send_counter >> 16) as u8, (*send_counter >> 24) as u8, 0, 0, 0, 0],
-                    is_extended: false,
-                };
-                cx.shared.mcp2515.lock(|mcp2515| {
-                    match mcp2515.send_message(&msg) {
-                        Ok(()) => {
-                            info!("FC: Sent test message #{} to Radio", *send_counter);
-                            led_pin.set_high().unwrap();
-                            timer.delay_ms(200);
-                            led_pin.set_low().unwrap();
-                        }
-                        Err(e) => {
-                            error!("FC: Failed to send test message: {:?}", e);
-                            *error_count += 1;
-                        }
+            cx.shared.token.lock(|token| {
+                if *token {
+                    led_pin.set_high().unwrap();
+                    *hold_timer += 1;
+                    if *hold_timer >= 40 { // 2 seconds (40 * 50ms)
+                        *hold_timer = 0;
+                        cx.shared.mcp2515.lock(|mcp2515| {
+                            let msg = CanMessage {
+                                id: 0x300, // Pass from FC to Radio
+                                dlc: 0,
+                                data: [0; 8],
+                                is_extended: false,
+                            };
+                            match mcp2515.send_message(&msg) {
+                                Ok(()) => {
+                                    info!("FC: Passed token to Radio");
+                                    *token = false;
+                                    led_pin.set_low().unwrap();
+                                }
+                                Err(e) => {
+                                    error!("FC: Failed to pass token: {:?}", e);
+                                    *error_count += 1;
+                                }
+                            }
+                        });
                     }
-                });
-            }
+                } else {
+                    led_pin.set_low().unwrap();
+                }
+            });
 
             cx.shared.mcp2515.lock(|mcp2515| {
                 match mcp2515.get_error_flags() {
@@ -206,14 +210,10 @@ mod app {
                     Ok(true) => {
                         match mcp2515.receive_message() {
                             Ok(Some(msg)) => {
-                                message_count += 1;
-                                let received_counter = (msg.data[0] as u32) | ((msg.data[1] as u32) << 8) | ((msg.data[2] as u32) << 16) | ((msg.data[3] as u32) << 24);
-                                info!("FC: Got response #{}, ID=0x{:x}, counter={}", message_count, msg.id, received_counter);
-                                for _ in 0..2 {
-                                    led_pin.set_high().unwrap();
-                                    timer.delay_ms(100);
-                                    led_pin.set_low().unwrap();
-                                    timer.delay_ms(100);
+                                if msg.id == 0x400 { // Pass from Radio to FC
+                                    info!("FC: Received token from Radio");
+                                    cx.shared.token.lock(|token| *token = true);
+                                    *hold_timer = 0; // Reset hold timer on receive
                                 }
                             }
                             Ok(None) => {}
@@ -231,7 +231,7 @@ mod app {
                 }
             });
 
-            timer.delay_ms(50); // Reduced for faster polling
+            timer.delay_ms(50);
         }
     }
 }
