@@ -3,7 +3,6 @@
 
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
-use panic_halt as _;
 use rp235x_hal as hal;
 use rtic::app;
 

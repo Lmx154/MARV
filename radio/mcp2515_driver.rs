@@ -1,15 +1,14 @@
+// radio/mcp2515_driver.rs
 #![allow(dead_code)]
 
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
 
-// Simple SPI trait to avoid external dependencies
 pub trait SimpleSpi {
     type Error;
     fn transfer_in_place(&mut self, buffer: &mut [u8]) -> Result<(), Self::Error>;
 }
 
-// CAN message structure
 #[derive(Debug, Clone)]
 pub struct CanMessage {
     pub id: u32,
@@ -18,7 +17,6 @@ pub struct CanMessage {
     pub is_extended: bool,
 }
 
-// MCP2515 Register Addresses
 const RXF0SIDH: u8 = 0x00;
 const RXF0SIDL: u8 = 0x01;
 const CANSTAT: u8 = 0x0E;
@@ -40,31 +38,21 @@ const CANINTE: u8 = 0x2B;
 const CANINTF: u8 = 0x2C;
 const EFLG: u8 = 0x2D;
 
-// MCP2515 SPI Commands
 const CMD_RESET: u8 = 0xC0;
 const CMD_READ: u8 = 0x03;
 const CMD_WRITE: u8 = 0x02;
-const CMD_RTS: u8 = 0x80; // Request to Send
+const CMD_RTS: u8 = 0x80;
 const CMD_READ_STATUS: u8 = 0xA0;
 const CMD_BIT_MODIFY: u8 = 0x05;
 
-// Control Register Modes
 const MODE_NORMAL: u8 = 0x00;
-const MODE_SLEEP: u8 = 0x20;
 const MODE_LOOPBACK: u8 = 0x40;
-const MODE_LISTEN_ONLY: u8 = 0x60;
 const MODE_CONFIG: u8 = 0x80;
 
-// Status bits
-const TXREQ: u8 = 0x08; // Message transmit request bit
-
-// Interrupt flags
-const RX0IF: u8 = 0x01; // Receive buffer 0 full interrupt flag
-const RX1IF: u8 = 0x02; // Receive buffer 1 full interrupt flag
-
-// RX buffer control bits
-const RXB0CTRL_RXM: u8 = 0x60; // Receive mode bits
-const RXB0CTRL_BUKT: u8 = 0x04; // Rollover enable bit
+const TXREQ: u8 = 0x08;
+const RX0IF: u8 = 0x01;
+const RX1IF: u8 = 0x02;
+const RXB0CTRL_RXM: u8 = 0x60;
 
 pub struct Mcp2515<SPI, CS, TIMER>
 where
@@ -77,7 +65,7 @@ where
     timer: TIMER,
 }
 
-#[derive(Debug)]
+#[derive(Debug, defmt::Format)]
 pub enum Mcp2515Error {
     SpiError,
     CsError,
@@ -97,61 +85,38 @@ where
     }
 
     pub fn init(&mut self) -> Result<(), Mcp2515Error> {
-        // Reset the MCP2515
         self.reset()?;
-        
-        // Wait for reset to complete
         self.timer.delay_ms(10);
-
-        // Check if we can communicate with the device
         if !self.check_communication()? {
             return Err(Mcp2515Error::InitError);
         }
-
-        // Set configuration mode
         self.set_mode(MODE_CONFIG)?;
-
-        // Configure bit timing for 125kbps @ 8MHz
-        // These values assume 8MHz crystal on MCP2515
-        self.write_register(CNF1, 0x03)?; // BRP = 3, SJW = 1
-        self.write_register(CNF2, 0x90)?; // BTLMODE = 1, SAM = 0, PHSEG1 = 1, PRSEG = 0
-        self.write_register(CNF3, 0x02)?; // PHSEG2 = 2
-
-        // Configure interrupts (enable RX0 interrupt)
+        self.write_register(CNF1, 0x03)?;
+        self.write_register(CNF2, 0x90)?;
+        self.write_register(CNF3, 0x02)?;
         self.write_register(CANINTE, RX0IF)?;
-
-        // Clear interrupt flags
         self.write_register(CANINTF, 0x00)?;
-
-        // Set normal mode
+        self.bit_modify(CANCTRL, 0x08, 0x08)?; // Enable one-shot mode
         self.set_mode(MODE_NORMAL)?;
-
         Ok(())
     }
 
     pub fn reset(&mut self) -> Result<(), Mcp2515Error> {
         self.cs.set_low().map_err(|_| Mcp2515Error::CsError)?;
-        
         let mut buf = [CMD_RESET];
         self.spi.transfer_in_place(&mut buf).map_err(|_| Mcp2515Error::SpiError)?;
-        
         self.cs.set_high().map_err(|_| Mcp2515Error::CsError)?;
         Ok(())
     }
 
     pub fn check_communication(&mut self) -> Result<bool, Mcp2515Error> {
-        // Try to read CANSTAT register - should return a valid mode
         let canstat = self.read_register(CANSTAT)?;
-        
-        // Check if the mode bits make sense (should be in CONFIG mode after reset)
         let mode = canstat & 0xE0;
         Ok(mode == MODE_CONFIG)
     }
 
     pub fn set_mode(&mut self, mode: u8) -> Result<(), Mcp2515Error> {
         self.bit_modify(CANCTRL, 0xE0, mode)?;
-        
-        // Wait for mode change to take effect
         let mut timeout = 100;
         while timeout > 0 {
             let canstat = self.read_register(CANSTAT)?;
@@ -161,78 +126,58 @@ where
             self.timer.delay_ms(1);
             timeout -= 1;
         }
-        
         Err(Mcp2515Error::NotReady)
     }
 
     pub fn read_register(&mut self, address: u8) -> Result<u8, Mcp2515Error> {
         self.cs.set_low().map_err(|_| Mcp2515Error::CsError)?;
-        
         let mut buf = [CMD_READ, address, 0x00];
         self.spi.transfer_in_place(&mut buf).map_err(|_| Mcp2515Error::SpiError)?;
-        
         self.cs.set_high().map_err(|_| Mcp2515Error::CsError)?;
-        
         Ok(buf[2])
     }
 
     pub fn write_register(&mut self, address: u8, data: u8) -> Result<(), Mcp2515Error> {
         self.cs.set_low().map_err(|_| Mcp2515Error::CsError)?;
-        
         let mut buf = [CMD_WRITE, address, data];
         self.spi.transfer_in_place(&mut buf).map_err(|_| Mcp2515Error::SpiError)?;
-        
         self.cs.set_high().map_err(|_| Mcp2515Error::CsError)?;
-        
         Ok(())
     }
 
     pub fn bit_modify(&mut self, address: u8, mask: u8, data: u8) -> Result<(), Mcp2515Error> {
         self.cs.set_low().map_err(|_| Mcp2515Error::CsError)?;
-        
         let mut buf = [CMD_BIT_MODIFY, address, mask, data];
         self.spi.transfer_in_place(&mut buf).map_err(|_| Mcp2515Error::SpiError)?;
-        
         self.cs.set_high().map_err(|_| Mcp2515Error::CsError)?;
-        
         Ok(())
     }
 
     pub fn read_status(&mut self) -> Result<u8, Mcp2515Error> {
         self.cs.set_low().map_err(|_| Mcp2515Error::CsError)?;
-        
         let mut buf = [CMD_READ_STATUS, 0x00];
         self.spi.transfer_in_place(&mut buf).map_err(|_| Mcp2515Error::SpiError)?;
-        
         self.cs.set_high().map_err(|_| Mcp2515Error::CsError)?;
-        
         Ok(buf[1])
     }
 
-    pub fn send_test_frame(&mut self) -> Result<(), Mcp2515Error> {
-        // Check if TX buffer 0 is free
+    pub fn send_message(&mut self, msg: &CanMessage) -> Result<(), Mcp2515Error> {
+        if msg.is_extended || msg.dlc > 8 {
+            return Err(Mcp2515Error::InvalidData);
+        }
         let status = self.read_register(TXB0CTRL)?;
         if status & TXREQ != 0 {
             return Err(Mcp2515Error::NotReady);
         }
-
-        // Set up a test CAN frame
-        // Standard ID: 0x123
-        self.write_register(TXB0SIDH, 0x24)?; // ID bits 10-3
-        self.write_register(TXB0SIDL, 0x60)?; // ID bits 2-0, no extended frame
-
-        // Data length: 8 bytes
-        self.write_register(TXB0DLC, 0x08)?;
-
-        // Test data
-        let test_data = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
-        for (i, &byte) in test_data.iter().enumerate() {
+        let sidh = ((msg.id >> 3) & 0xFF) as u8;
+        let sidl = ((msg.id & 0x07) << 5) as u8;
+        self.write_register(TXB0SIDH, sidh)?;
+        self.write_register(TXB0SIDL, sidl)?;
+        self.write_register(TXB0DLC, msg.dlc)?;
+        for (i, &byte) in msg.data.iter().enumerate().take(msg.dlc as usize) {
             self.write_register(TXB0DATA + i as u8, byte)?;
         }
-
-        // Request transmission
         self.write_register(TXB0CTRL, TXREQ)?;
-
         Ok(())
     }
 
@@ -260,75 +205,53 @@ where
 
     pub fn receive_message(&mut self) -> Result<Option<CanMessage>, Mcp2515Error> {
         let flags = self.get_interrupt_flags()?;
-        
         if flags & RX0IF != 0 {
-            // Read message from RXB0
             let id_high = self.read_register(RXB0SIDH)?;
             let id_low = self.read_register(RXB0SIDL)?;
             let dlc_reg = self.read_register(RXB0DLC)?;
-            
-            // Extract CAN ID (standard frame)
             let id = ((id_high as u16) << 3) | ((id_low as u16) >> 5);
-            let dlc = dlc_reg & 0x0F; // Data length code (lower 4 bits)
-            
-            // Read data bytes
+            let dlc = dlc_reg & 0x0F;
             let mut data = [0u8; 8];
             for i in 0..core::cmp::min(dlc as usize, 8) {
                 data[i] = self.read_register(RXB0DATA + i as u8)?;
             }
-            
-            // Clear the interrupt flag
             self.clear_interrupt_flag(RX0IF)?;
-            
-            Ok(Some(CanMessage {
-                id: id as u32,
-                dlc,
-                data,
-                is_extended: false,
-            }))
+            Ok(Some(CanMessage { id: id as u32, dlc, data, is_extended: false }))
         } else {
             Ok(None)
         }
     }
 
     pub fn configure_receive_all(&mut self) -> Result<(), Mcp2515Error> {
-        // Configure RXB0 to receive all messages (turn off filters)
-        self.write_register(RXB0CTRL, RXB0CTRL_RXM)?; // Receive any message
+        self.write_register(RXB0CTRL, RXB0CTRL_RXM)?;
         Ok(())
     }
 
     pub fn test_basic_functionality(&mut self) -> Result<(), Mcp2515Error> {
-        // Test 1: Check communication
         if !self.check_communication()? {
             return Err(Mcp2515Error::InitError);
         }
-
-        // Test 2: Set loopback mode for self-test
         self.set_mode(MODE_LOOPBACK)?;
-
-        // Test 3: Send a test frame
-        self.send_test_frame()?;
-
-        // Test 4: Wait for transmission to complete
+        let test_msg = CanMessage {
+            id: 0x123,
+            dlc: 8,
+            data: [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE],
+            is_extended: false,
+        };
+        self.send_message(&test_msg)?;
         let mut timeout = 100;
         while timeout > 0 && !self.check_transmission_complete()? {
             self.timer.delay_ms(1);
             timeout -= 1;
         }
-
         if timeout == 0 {
             return Err(Mcp2515Error::NotReady);
         }
-
-        // Test 5: Check for errors
         let error_flags = self.get_error_flags()?;
         if error_flags != 0 {
             return Err(Mcp2515Error::InvalidData);
         }
-
-        // Return to normal mode
         self.set_mode(MODE_NORMAL)?;
-
         Ok(())
     }
 }
