@@ -13,7 +13,7 @@ use embedded_hal::digital::OutputPin;
 use rtic::app;
 
 // Additional imports for corrected types
-use hal::gpio::{FunctionSioOutput, Pin, bank0::Gpio25, PullNone};
+use hal::gpio::{FunctionSioOutput, Pin, bank0::Gpio24, PullNone};
 use hal::timer::{Timer, CopyableTimer0};
 
 // Tell the Boot ROM about our application
@@ -32,7 +32,7 @@ mod app {
     #[local]
     struct Local {
         timer: Timer<CopyableTimer0>,
-        led_pin: Pin<Gpio25, FunctionSioOutput, PullNone>,
+        led_pin: Pin<Gpio24, FunctionSioOutput, PullNone>, // Different LED pin for radio
     }
 
     #[init]
@@ -51,7 +51,7 @@ mod app {
         )
         .unwrap();
 
-        let timer = Timer::new_timer0(cx.device.TIMER0, &mut resets, &clocks);
+        let mut timer = Timer::new_timer0(cx.device.TIMER0, &mut resets, &clocks);
 
         let sio = hal::Sio::new(cx.device.SIO);
 
@@ -62,7 +62,16 @@ mod app {
             &mut resets,
         );
 
-        let led_pin = pins.gpio25.into_pull_type::<PullNone>().into_push_pull_output();
+        // Radio uses GPIO24 as LED instead of GPIO25
+        let mut led_pin = pins.gpio24.into_pull_type::<PullNone>().into_push_pull_output();
+
+        // Radio initialization pattern: 4 quick blinks
+        for _ in 0..4 {
+            led_pin.set_high().unwrap();
+            timer.delay_ms(75);
+            led_pin.set_low().unwrap();
+            timer.delay_ms(75);
+        }
 
         (Shared {}, Local { timer, led_pin })
     }
@@ -72,17 +81,17 @@ mod app {
         let timer = cx.local.timer;
         let led_pin = cx.local.led_pin;
 
-        // Main loop - blink the LED
+        // Radio has different blink pattern - faster blinks
         loop {
             // Turn LED on
             led_pin.set_high().unwrap();
-            // Wait for 100ms
-            timer.delay_ms(500);
+            // Wait for 250ms (faster than FC)
+            timer.delay_ms(250);
 
             // Turn LED off
             led_pin.set_low().unwrap();
-            // Wait for 100ms
-            timer.delay_ms(500);
+            // Wait for 250ms
+            timer.delay_ms(250);
         }
     }
 }
