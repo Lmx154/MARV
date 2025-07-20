@@ -6,7 +6,7 @@ use panic_probe as _;
 use defmt_rtt as _; // global logger
 use rp235x_hal as hal;
 use rtic::app;
-use hal::gpio::{FunctionSioOutput, Pin, bank0::Gpio24, PullNone, FunctionSpi, PullUp};
+use hal::gpio::{FunctionSioOutput, Pin, bank0::Gpio25, PullNone, FunctionSpi, PullUp};
 use hal::timer::{Timer, CopyableTimer0, CopyableTimer1};
 use hal::spi::Spi;
 use hal::fugit::HertzU32;
@@ -56,7 +56,7 @@ mod app {
     #[local]
     struct Local {
         timer: Timer<CopyableTimer0>,
-        led_pin: Pin<Gpio24, FunctionSioOutput, PullNone>,
+        led_pin: Pin<Gpio25, FunctionSioOutput, PullNone>, // Corrected to GPIO25
         receive_counter: u32,
         error_count: u32,
     }
@@ -86,7 +86,7 @@ mod app {
             &mut resets,
         );
 
-        let mut led_pin = pins.gpio24.into_pull_type::<PullNone>().into_push_pull_output();
+        let mut led_pin = pins.gpio25.into_pull_type::<PullNone>().into_push_pull_output(); // Corrected to GPIO25
         let spi_sclk = pins.gpio18.into_pull_type::<PullUp>().into_function::<FunctionSpi>();
         let spi_mosi = pins.gpio19.into_pull_type::<PullUp>().into_function::<FunctionSpi>();
         let spi_miso = pins.gpio16.into_pull_type::<PullUp>().into_function::<FunctionSpi>();
@@ -159,6 +159,12 @@ mod app {
 
         info!("Radio entering main loop - monitoring CAN bus");
         loop {
+            // Debug blink to confirm loop execution
+            led_pin.set_high().unwrap();
+            timer.delay_ms(500);
+            led_pin.set_low().unwrap();
+            timer.delay_ms(500);
+
             cx.shared.mcp2515.lock(|mcp2515| {
                 match mcp2515.get_error_flags() {
                     Ok(errors) => {
