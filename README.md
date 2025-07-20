@@ -94,12 +94,6 @@ cargo run
 ```
 - Flashes the FC binary (default binary)
 
-### Device Connection
-1. Connect your RP2350 via USB
-2. Put device in bootloader mode:
-   - Hold BOOTSEL button while plugging in USB, OR
-   - Hold BOOTSEL + press RESET button
-
 ## VS Code Integration
 
 ### Available Tasks (Ctrl+Shift+P → "Tasks: Run Task")
