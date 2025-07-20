@@ -1,6 +1,6 @@
-# RustyPico - Dual RP2350 Embedded Project
+# RustyPico - Triple RP2350 Embedded Project
 
-A Rust embedded project for Raspberry Pi Pico 2 (RP2350) with two separate binaries: Flight Controller (FC) and Radio.
+A Rust embedded project for Raspberry Pi Pico 2 (RP2350) with three separate binaries: Flight Controller (FC), Radio, and Ground Station (GS).
 
 ## Project Structure
 
@@ -11,7 +11,9 @@ rustypico/
 │   └── mcp2515_driver.rs  # MCP2515 CAN controller driver
 ├── radio/                 # Radio Project
 │   └── main.rs           # Radio main application code
-├── Cargo.toml            # Project configuration with dual binary setup
+├── gs/                    # Ground Station Project
+│   └── main.rs           # GS main application code
+├── Cargo.toml            # Project configuration with triple binary setup
 └── .vscode/tasks.json    # VS Code build tasks
 ```
 
@@ -38,6 +40,17 @@ rustypico/
   - 4 quick blinks at startup: Radio initialization
   - Fast blink (250ms): Normal operation
 
+### Ground Station (GS)
+- **LED**: GPIO25 (onboard LED)
+- **LoRa Radio - E32900T30D on UART0**:
+  - GP0: TX (UART0)
+  - GP1: RX (UART0)
+- **Features**: Ground station communication and monitoring
+- **Status LEDs**:
+  - 3 quick blinks at startup: GS initialization
+  - Slow blink (500ms): Normal operation
+  - Medium blink (350ms): Normal operation
+
 ## Build Commands
 
 ### Building Specific Binaries
@@ -56,18 +69,26 @@ cargo build --bin radio
 - Builds: `radio/main.rs`
 - Output: `target/thumbv8m.main-none-eabihf/debug/radio`
 
-**Both Binaries:**
+**Ground Station:**
+```bash
+cargo build --bin gs
+```
+- Builds: `gs/main.rs`
+- Output: `target/thumbv8m.main-none-eabihf/debug/gs`
+
+**All Binaries:**
 ```bash
 cargo build
 ```
-- Builds both FC and radio binaries simultaneously
+- Builds FC, radio, and GS binaries simultaneously
 
 ### Check for Compilation Errors (No Build)
 
 ```bash
 cargo check --bin FC      # Check FC only
 cargo check --bin radio   # Check radio only
-cargo check               # Check both
+cargo check --bin gs      # Check GS only
+cargo check               # Check all three
 ```
 
 ## Flashing Commands
@@ -88,6 +109,13 @@ cargo run --bin radio
 - Compiles `radio/main.rs`
 - Flashes radio binary to connected RP2350
 
+**Ground Station:**
+```bash
+cargo run --bin gs
+```
+- Compiles `gs/main.rs`
+- Flashes GS binary to connected RP2350
+
 **Default (FC):**
 ```bash
 cargo run
@@ -99,18 +127,20 @@ cargo run
 ### Available Tasks (Ctrl+Shift+P → "Tasks: Run Task")
 - **Build FC**: Builds flight controller binary only
 - **Build Radio**: Builds radio binary only  
-- **Build All**: Builds both binaries
+- **Build GS**: Builds ground station binary only
+- **Build All**: Builds all three binaries
 
 ### Configuration Files
-- **Cargo.toml**: Defines both binaries with their respective paths
+- **Cargo.toml**: Defines all three binaries with their respective paths
 - **.vscode/tasks.json**: VS Code build tasks for each binary
 
 ## Development Workflow
 
-1. **Choose your target**: Decide whether you're working on FC or Radio
+1. **Choose your target**: Decide whether you're working on FC, Radio, or GS
 2. **Edit the appropriate files**:
    - FC: Modify files in `fc/` directory
    - Radio: Modify files in `radio/` directory
+   - GS: Modify files in `gs/` directory
 3. **Build and test**: Use `cargo build --bin <target>` to compile
 4. **Flash to device**: Use `cargo run --bin <target>` to upload
 
@@ -136,4 +166,4 @@ MIT License - See project metadata for details.
 
 ---
 
-Each binary is completely self-contained and can be developed independently with different sensors, pinouts, and functionality.
+Each binary is completely self-contained and can be developed independently with different sensors, pinouts, and functionality. The three systems (FC, Radio, and GS) work together to form the complete MARV project architecture.

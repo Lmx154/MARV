@@ -40,3 +40,9 @@ name = "radio"
 path = "radio/main.rs"
 test = false
 bench = false
+
+[[bin]]
+name = "gs"
+path = "gs/main.rs"
+test = false
+bench = false

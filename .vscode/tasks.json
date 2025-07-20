@@ -32,6 +32,21 @@
 			"isBackground": false
 		},
 		{
+			"label": "Build GS",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"build",
+				"--bin",
+				"gs"
+			],
+			"group": "build",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"isBackground": false
+		},
+		{
 			"label": "Build All",
 			"type": "shell",
 			"command": "cargo",
