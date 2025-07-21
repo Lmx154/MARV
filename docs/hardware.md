@@ -8,11 +8,11 @@ This document outlines the hardware configurations and pin assignments for the M
 
 - **Sensors and Interfaces**:
   - **RTC - PCF8563P**: I2C
-    - SDA: GP4 (I2C0)
-    - SCL: GP5 (I2C0)
+    - SDA: GP2 (I2C1)
+    - SCL: GP3 (I2C1)
   - **Barometer - BMP388**: I2C
-    - SDA: GP4 (I2C0)
-    - SCL: GP5 (I2C0)
+    - SDA: GP2 (I2C1)
+    - SCL: GP3 (I2C1)
   - **SD Card Storage**: SPI (not using dedicated SPI controller)
     - CLK: GP6
     - MOSI: GP7
@@ -35,8 +35,11 @@ This document outlines the hardware configurations and pin assignments for the M
   - **IMU - ICM-20948**: I2C
     - SDA: GP4 (I2C0)
     - SCL: GP5 (I2C0)
+  - **GPS - Ublox NEO-M9N**: UART
+    - TX: GP0 (UART0, FC TX to GPS RX)
+    - RX: GP1 (UART0, FC RX from GPS TX)
 
-**Note**: All I2C devices share the same bus on I2C0 (GP4 SDA, GP5 SCL).
+**Note**: I2C devices are split across two buses: High-frequency sensors (IMU and magnetometer) on I2C0 (GP4 SDA, GP5 SCL); lower-frequency sensors (barometer and RTC) on I2C1 (GP2 SDA, GP3 SCL).
 
 ## Radio
 
@@ -46,9 +49,6 @@ This document outlines the hardware configurations and pin assignments for the M
   - **LoRa Radio - E32900T30D**: UART
     - TX: GP0 (UART0)
     - RX: GP1 (UART0)
-  - **GPS - Ublox NEO-M9N**: UART
-    - TX: GP4 (UART1)
-    - RX: GP5 (UART1)
   - **CAN Controller - MCP2515**: SPI
     - MOSI: GP19 (SPI0)
     - CLK: GP18 (SPI0)
