@@ -1,11 +1,11 @@
-# RustyPico - Triple RP2350 Embedded Project
+# MARV Project - Modular Aerial Robotic Vehicle
 
-A Rust embedded project for Raspberry Pi Pico 2 (RP2350) with three separate binaries: Flight Controller (FC), Radio, and Ground Station (GS).
+A Rust embedded project for Raspberry Pi Pico 2 (RP2350) with three separate binaries: Flight Controller (FC), Radio, and Ground Station (GS). This project implements a UAV system where the FC handles flight operations and sensors, the Radio manages wireless communications, and the GS monitors telemetry.
 
 ## Project Structure
 
 ```
-rustypico/
+lmx154-rustypico/
 ├── fc/                     # Flight Controller Project
 │   ├── main.rs            # FC main application code
 │   └── mcp2515_driver.rs  # MCP2515 CAN controller driver
@@ -17,41 +17,57 @@ rustypico/
 └── .vscode/tasks.json    # VS Code build tasks
 ```
 
-## Hardware Configurations
+## Hardware Requirements
 
-### Flight Controller (FC)
-- **LED**: GPIO25 (onboard LED)
-- **MCP2515 CAN Controller on SPI1**:
-  - GP10: SCK (Clock)
-  - GP11: MOSI (Master Out, Slave In)
-  - GP12: MISO (Master In, Slave Out)  
-  - GP13: CS (Chip Select)
-- **Features**: CAN bus communication, MCP2515 self-test in loopback mode
-- **Status LEDs**:
-  - 3 fast blinks: Full MCP2515 success (init + functionality test)
-  - 2 fast blinks: MCP2515 init success, test failed
-  - 5 fast blinks: MCP2515 initialization error
-  - Slow blink (500ms): Normal operation
+- **Microcontrollers**: Three Raspberry Pi Pico 2 boards (RP2350A) for FC, Radio, and GS.
+- **Flight Controller (FC)**:
+  - Sensors: BMP388 barometer (I2C1), PCF8563 RTC (I2C1), BMI088 IMU (SPI0), BMM350 magnetometer (I2C0), ICM-20948 IMU (I2C0), Ublox NEO-M9N GPS (UART0).
+  - CAN: MCP2515 on SPI1 for communication with Radio.
+  - LED: GPIO25.
+- **Radio**:
+  - LoRa: E32900T30D on UART0.
+  - CAN: MCP2515 on SPI0 for communication with FC.
+  - LED: GPIO24.
+- **Ground Station (GS)**:
+  - LoRa: E32900T30D on UART0.
+  - LED: GPIO25.
+- **Probe for Flashing/Debugging**: Use another Raspberry Pi Pico as a SWD probe (cheaper alternative to dedicated probes). Flash the probe firmware from the official Raspberry Pi documentation.
 
-### Radio
-- **LED**: GPIO24
-- **Features**: Different pinout for radio-specific sensors
-- **Status LEDs**:
-  - 4 quick blinks at startup: Radio initialization
-  - Fast blink (250ms): Normal operation
+## Protocols and High-Level Overview
 
-### Ground Station (GS)
-- **LED**: GPIO25 (onboard LED)
-- **LoRa Radio - E32900T30D on UART0**:
-  - GP0: TX (UART0)
-  - GP1: RX (UART0)
-- **Features**: Ground station communication and monitoring
-- **Status LEDs**:
-  - 3 quick blinks at startup: GS initialization
-  - Slow blink (500ms): Normal operation
-  - Medium blink (350ms): Normal operation
+- **Intra-Module (FC-Radio)**: MultiWii Serial Protocol (MSP) over CAN bus for lightweight, binary data transfer (e.g., telemetry, commands). Frames include headers, payloads, and CRC-16-CCITT checksums for integrity.
+- **Inter-Module (Radio-GS)**: MAVLink v2 over LoRa (915 MHz) for standardized telemetry and commands, with RSSI/SNR appended.
+- **Checksums**: CRC-16-CCITT on all CAN packets to detect corruption.
+- **High-Level View**: The FC acquires sensor data (e.g., IMU, GPS), performs estimation (AHRS/EKF) and control, and sends raw data via CAN to the Radio. The Radio encodes/decodes MAVLink and transmits over LoRa to the GS, which forwards to a computer (e.g., QGroundControl). Reverse flow handles commands. This modular setup ensures the FC focuses on real-time flight without comms overhead.
+
+## Installation from Scratch
+
+1. **Install Rust**:
+   - Download and install Rustup: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`.
+   - Install nightly toolchain: `rustup install nightly`.
+   - Add the target: `rustup target add thumbv8m.main-none-eabihf --toolchain nightly`.
+
+2. **Install probe-rs**:
+   - `cargo install probe-rs --features cli`.
+
+3. **Set Up Probe**:
+   - Use a Raspberry Pi Pico as a probe (cheaper than dedicated tools). Follow the official guide to flash it as a SWD probe: [Raspberry Pi Debug Probe](https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html).
+   - Wiring (essential for flashing/debugging):
+     - Connect target SWDIO to probe GP4.
+     - Connect target SWDCLK to probe GP5.
+     - Ensure common ground (GND) between probe and target.
+     - Power the target separately.
 
 ## Build Commands
+
+### Checking for Compilation Errors (No Build)
+
+```bash
+cargo check --bin FC      # Check FC only
+cargo check --bin radio   # Check radio only
+cargo check --bin gs      # Check GS only
+cargo check               # Check all three
+```
 
 ### Building Specific Binaries
 
@@ -82,18 +98,9 @@ cargo build
 ```
 - Builds FC, radio, and GS binaries simultaneously
 
-### Check for Compilation Errors (No Build)
-
-```bash
-cargo check --bin FC      # Check FC only
-cargo check --bin radio   # Check radio only
-cargo check --bin gs      # Check GS only
-cargo check               # Check all three
-```
-
 ## Flashing Commands
 
-### Flash to RP2350 Device
+Connect the probe as described above. Ensure the target RP2350 is connected and powered.
 
 **Flight Controller:**
 ```bash
@@ -121,6 +128,20 @@ cargo run --bin gs
 cargo run
 ```
 - Flashes the FC binary (default binary)
+
+## Viewing RTT Output
+
+The project uses defmt-rtt for logging. To view real-time logs:
+
+1. Install defmt tools: `cargo install defmt-print`.
+2. Flash the binary first (e.g., `cargo run --bin FC`).
+3. In a separate terminal, attach and view RTT:
+   ```bash
+   probe-rs attach --chip RP2350 --protocol swd
+   ```
+   - This starts a GDB session; exit it if needed.
+   - For defmt: `defmt-print probe-rs -c RP2350 -e target/thumbv8m.main-none-eabihf/debug/FC`
+   - If issues, ensure probe-rs is configured for RTT channels.
 
 ## VS Code Integration
 

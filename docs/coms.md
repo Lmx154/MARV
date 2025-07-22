@@ -6,7 +6,7 @@ This communication document delineates the intra-module and inter-module interfa
 
 Key principles include:
 - Minimizing overhead for real-time operations.
-- Incorporating CRC validation for integrity.
+- Incorporating CRC-16-CCITT validation for integrity.
 - Supporting phased development, with telemetry-only modes for validation.
 
 ## Intra-Module Communications
@@ -37,7 +37,7 @@ Key principles include:
 
 ## Inter-Module Communications
 
-- **FC to Radio**: Via CAN bus (MCP2515 controllers). Uses a lightweight protocol: MultiWii Serial Protocol (MSP), adapted for CAN framing. MSP is a binary format from Betaflight, chosen for its efficiency in drone telemetry (header: start byte + direction + size + type; payload: sensor data; checksum: XOR). Raw data includes batched sensor outputs (e.g., IMU accelerations, GPS positions) at 20-50 Hz. CAN messages wrap MSP frames (payload <8 bytes per frame for efficiency), with token passing for arbitration as in current code.
+- **FC to Radio**: Via CAN bus (MCP2515 controllers). Uses a lightweight protocol: MultiWii Serial Protocol (MSP), adapted for CAN framing. MSP is a binary format from Betaflight, chosen for its efficiency in drone telemetry (header: start byte + direction + size + type; payload: sensor data; checksum: XOR). Raw data includes batched sensor outputs (e.g., IMU accelerations, GPS positions) at 20-50 Hz. CAN messages wrap MSP frames (payload <8 bytes per frame for efficiency), with token passing for arbitration as in current code. CRC-16-CCITT on all packets.
 - **Radio to GS**: Wireless via LoRa at 915 MHz. Protocol: MAVLink v2 for standardized telemetry/commands. Radio receives MSP-wrapped raw data from FC, appends LoRa RSSI/SNR (e.g., in RADIO_STATUS message), and encodes into MAVLink packets (e.g., ATTITUDE, GPS_RAW_INT). Transmission at configurable rates (e.g., 10-50 Hz) to balance bandwidth.
 - **GS to Radio (and Reverse Flows)**: Bidirectional LoRa with MAVLink v2. GS sends commands (e.g., mode changes) to Radio, which decodes and forwards via MSP over CAN to FC.
 

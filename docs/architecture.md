@@ -6,7 +6,7 @@ This document furnishes a comprehensive high-level design for the firmware of an
 
 The firmware operates within a no_std environment, utilizing the rp235x-hal crate for hardware abstraction. As of July 21, 2025, rp235x-hal delivers stable support for RP2350 peripherals, incorporating recent enhancements for GPIO reliability and PIO programming, as documented in the RP2350 datasheet (version dated August 2024). The system derives inspiration from open-source initiatives such as madflight, ArduPilot, and Betaflight, adapting their modular frameworks while exceeding them in safety through Rust’s compile-time validations and in performance via RP2350-specific optimizations.
 
-Communication responsibilities, including MAVLink encoding and decoding over LoRa, are delegated to a separate microcontroller (Radio MC), allowing the RP2350 flight computer (FC) to concentrate exclusively on core flight operations. Data exchange between the Radio MC and FC occurs via CAN with cyclic redundancy check (CRC) for integrity verification, ensuring robust, non-blocking transfers without encumbering the FC’s dual cores.
+Communication responsibilities, including MAVLink encoding and decoding over LoRa, are delegated to a separate microcontroller (Radio MC), allowing the RP2350 flight computer (FC) to concentrate exclusively on core flight operations. Data exchange between the Radio MC and FC occurs via CAN with cyclic redundancy check (CRC-16-CCITT) for integrity verification, ensuring robust, non-blocking transfers without encumbering the FC’s dual cores.
 
 Key objectives encompass attaining exceptional flight smoothness via extensible control algorithms, rigorous telemetry validation, and phased development incorporating optimization cycles. During the telemetry-only phase, testing will integrate an ArduPilot drone, facilitating data monitoring through a ground station while the Radio MC manages MAVLink interactions.
 
@@ -15,7 +15,7 @@ Key objectives encompass attaining exceptional flight smoothness via extensible 
 - **Hardware**: RP2350 microcontroller interfacing with sensors via I2C (BMP388 barometer and PCF8563 RTC on I2C1; BMM350 magnetometer and ICM-20948 IMU on I2C0), SPI (BMI088 IMU, SD card), UART (Ublox NEO-M9N GPS), and PIO for actuators (e.g., servos). A separate Radio MC handles LoRa communications, connected to the FC via CAN for raw data transfer.
 - **Software Environment**: Rust no_std toolchain, RTIC for task scheduling, rp235x-hal for HAL. No additional crates; custom fixed-point mathematics for DSP utilization.
 - **UAV Applications**: Drones, rockets, RC planes, emphasizing initial telemetry precision prior to control activation.
-- **Communication Protocol**: MAVLink managed exclusively by the Radio MC for ground station interactions. CAN between Radio MC and FC employs custom framed binary packets with CRC (e.g., CRC-16-CCITT) for data integrity, containing pre-parsed commands or telemetry payloads.
+- **Communication Protocol**: MAVLink managed exclusively by the Radio MC for ground station interactions. CAN between Radio MC and FC employs custom framed binary packets with CRC-16-CCITT for data integrity, containing pre-parsed commands or telemetry payloads.
 - **Performance Goals**: Sub-millisecond control loop latency, <5% CPU utilization for sensor/estimation tasks via DMA/PIO, and resilient operation with fault tolerance.
 
 ## Firmware Architecture Overview
@@ -48,7 +48,7 @@ The Radio MC independently handles LoRa interactions, encoding/decoding MAVLink,
 - AHRS for quaternion-based attitude computation, EKF for integrated state estimation (position, velocity, orientation).
 - Logging to SD card (configurable 1-50 Hz) with RTC timestamps.
 - Actuator governance via PIO PWM for servos/motors.
-- CAN reception of raw data from Radio MC, with CRC validation for integrity.
+- CAN reception of raw data from Radio MC, with CRC-16-CCITT validation for integrity.
 
 ### Advanced Features
 
@@ -61,7 +61,7 @@ The Radio MC independently handles LoRa interactions, encoding/decoding MAVLink,
 ### Safety and Reliability
 
 - Watchdog timers in RTIC for hang detection.
-- CRC verification on CAN packets from Radio MC to mitigate corruption.
+- CRC-16-CCITT verification on CAN packets from Radio MC to mitigate corruption.
 - Low-power modes in Recovery leveraging RP2350’s sleep capabilities.
 
 ## Error Prevention Measures
@@ -71,7 +71,7 @@ Embedded systems on RP2350 encounter challenges from Rust’s ownership, periphe
 - **Rust Ownership/Borrowing in no_std**: Employ UnsafeCell in bus managers for mutable access, safeguarded by RTIC’s single-threaded execution. Traits enforce compile-time borrowing, averting data races. Pin buffers in RTIC resources to prevent use-after-free in DMA contexts.
 - **I2C Conflicts**: Manager guarantees exclusive access; incorporate timeouts and recovery (e.g., clock stretching handling) for stuck slaves, per rp235x-hal guidelines.
 - **SPI/DMA Issues**: Share DMA channels via traits; completion interrupts invoke tasks, with status inspections addressing RP2350 FIFO overflows.
-- **CAN from Radio MC**: DMA for reception; CRC (e.g., CRC-16) validation in receive tasks discards corrupted frames. Baud rate synchronization prevents overruns; queues buffer data to avoid blocking.
+- **CAN from Radio MC**: DMA for reception; CRC-16-CCITT validation in receive tasks discards corrupted frames. Baud rate synchronization prevents overruns; queues buffer data to avoid blocking.
 - **RP2350 Dual-Core Pitfalls**: RTIC core affinity precludes cross-core races; atomic operations for shared SRAM params.
 - **LoRa/MAVLink Delegation**: Radio MC isolation prevents FC exposure to radio noise or packet errors; CAN CRC adds redundancy.
 - **General**: Compile-time pin conflict checks; runtime health assessments via params terminate unsafe states.
@@ -199,7 +199,7 @@ Development proceeds in phases with embedded optimization cycles, yielding testa
 
 ### Phase 2: CAN Reception from Radio MC and Optimization
 
-**Objective**: Integrate CAN for raw data from Radio MC, with CRC.
+**Objective**: Integrate CAN for raw data from Radio MC, with CRC-16-CCITT.
 
 - **MVP 2.1: CAN Setup**
   - Configure CAN DMA RX on Core 1; implement CRC validation.

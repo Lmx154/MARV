@@ -58,7 +58,7 @@ Implement the three-layer architecture as follows:
      ```
      - Modularity: Allows swapping sensors without changing application logic.
 
-3. **Application Layer**: Use RTIC for tasks on dual cores. Core 0 for high-priority estimation/control; Core 1 for logging/UART.
+3. **Application Layer**: Use RTIC for tasks on dual cores. Core 0 for high-priority estimation/control; Core 1 for logging/CAN.
    - Shared resources: Use queues (e.g., fixed-size arrays with atomic indices) for inter-core data.
    - Pseudo code for a queue:
      ```
@@ -94,13 +94,13 @@ Implement the three-layer architecture as follows:
   - AHRS/EKF: Custom implementations using quaternion math (fixed-point where possible). AHRS fuses gyro/accel/mag in O(n) steps (n=small matrix sizes).
   - Logging: DMA writes to SD; format as binary with timestamps (O(1) per entry).
   - Actuators: PIO for PWM; configure state machines for parallel output.
-  - UART Reception: DMA RX with CRC check (CRC-16-CCITT: O(n) over packet, n<100 bytes).
+  - CAN Reception: DMA RX with CRC-16-CCITT check (O(n) over packet, n<100 bytes).
 
 - **Advanced Features**:
   - Flight Modes: Enum-based state machine; traits for controllers (e.g., PID: O(1) per update).
   - Parameter System: Struct with fixed fields; load from flash, validate on update (O(1) lookups).
   - Calibration: Accumulate samples (bounded buffer), compute averages/biases (O(n) with n=100-1000).
-  - Telemetry-Only: Disable control tasks; queue data for UART TX if needed (but primarily Radio MC handles).
+  - Telemetry-Only: Disable control tasks; queue data for CAN TX to Radio.
 
 - **Safety and Reliability**:
   - Watchdog: RTIC monotonic timer resets.
@@ -111,7 +111,7 @@ Implement the three-layer architecture as follows:
 - **Ownership/Borrowing**: Use RTIC late resources; wrap mutables in UnsafeCell only if needed, but prefer task priorities.
 - **I2C Conflicts**: Timeout in acquire (e.g., spinloop with counter); recovery: reset bus via rp235x-hal.
 - **SPI/DMA**: Check status flags in interrupts; retry on overflow (rare, O(1)).
-- **UART**: Validate CRC before queuing; baud rate: 115200 for balance.
+- **CAN**: Validate CRC-16-CCITT before queuing; baud rate: 115200 for balance.
 - **Dual-Core**: Affinity in RTIC; atomics for shared params.
 - **General**: Static pin assignments; health checks in idle task.
 
@@ -130,7 +130,7 @@ Follow the phases sequentially. Each MVP includes:
   - **Checklist**:
     - Configure peripherals (I2C, SPI, DMA) in init.
     - Implement bus managers for I2C/SPI.
-    - Create trait-based drivers for BMP388, LIS3MDL, PCF8563, BMI088.
+    - Create trait-based drivers for BMP388, BMM350, PCF8563, BMI088, ICM-20948, Ublox NEO-M9N.
     - Parse raw data with fixed-point scaling.
     - Output parsed data via serial (for testing).
   - **Pseudo Code Snippet** (Driver Example for BMI088 IMU):
@@ -189,21 +189,21 @@ Follow the phases sequentially. Each MVP includes:
 
 - **Optimization 1.2**: Balance tasks across cores (reads on Core 0); profile queue latencies (<10 µs).
 
-### Phase 2: UART Reception from Radio MC and Optimization
+### Phase 2: CAN Reception from Radio MC and Optimization
 
-**Objective**: Add UART RX with CRC; integrate parameters.
+**Objective**: Add CAN RX with CRC-16-CCITT; integrate parameters.
 
-- **MVP 2.1: UART Setup**
+- **MVP 2.1: CAN Setup**
   - **Checklist**:
-    - Configure UART DMA RX on Core 1.
+    - Configure CAN DMA RX on Core 1.
     - Implement frame format: Header (2 bytes len/type) + Payload + CRC (2 bytes).
     - Validate CRC-16-CCITT in task.
     - Queue valid payloads (e.g., telemetry requests).
-  - **Pseudo Code Snippet** (UART Parse Task):
+  - **Pseudo Code Snippet** (CAN Parse Task):
     ```
-    #[task(priority = 2, core = 1, resources = [uart_dma_buffer, queue])]
-    fn parse_uart(cx: parse_uart::Context) {
-        let buffer = cx.resources.uart_dma_buffer;  // Fixed size
+    #[task(priority = 2, core = 1, resources = [can_dma_buffer, queue])]
+    fn parse_can(cx: parse_can::Context) {
+        let buffer = cx.resources.can_dma_buffer;  // Fixed size
         let crc_calc = crc16_ccitt(buffer[0..len]);  // O(n), n small
         if crc_calc != buffer[len..len+2] { log_error(); return; }
         let payload = extract_payload(buffer);
@@ -219,7 +219,7 @@ Follow the phases sequentially. Each MVP includes:
 - **MVP 2.2: Parameter System Integration**
   - **Checklist**:
     - Define Params struct with fixed fields (e.g., array of key-value).
-    - Load from flash on boot; update from UART payloads.
+    - Load from flash on boot; update from CAN payloads.
     - Validate updates (e.g., range checks).
   - **Pseudo Code Snippet** (Params Update):
     ```
@@ -253,7 +253,7 @@ Follow the phases sequentially. Each MVP includes:
   - **Checklist**:
     - Custom AHRS: Madgwick-like fusion (quaternions, O(1) per update).
     - Custom EKF: 15-state (pos/vel/att/bias), matrix ops with fixed-point.
-    - Integrate UART commands to toggle.
+    - Integrate CAN commands to toggle.
     - Log estimates.
   - **Pseudo Code Snippet** (AHRS Update):
     ```
