@@ -2,7 +2,7 @@
 #![no_std]
 #![no_main]
 
-use panic_probe as _;
+use panic_halt as _;
 use defmt_rtt as _; // global logger
 use rp235x_hal as hal;
 use rtic::app;
@@ -40,8 +40,12 @@ where
 #[used]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
-defmt::timestamp!("{=u64}", {
-    0
+defmt::timestamp!("{=u64:us}", {
+    static mut TIMESTAMP: u64 = 0;
+    unsafe {
+        TIMESTAMP += 1;
+        TIMESTAMP
+    }
 });
 
 #[app(device = hal::pac, peripherals = true, dispatchers = [TIMER0_IRQ_0])]
@@ -77,6 +81,8 @@ mod app {
             &mut watchdog,
         )
         .unwrap();
+
+        info!("Early log test");
 
         let mut timer = Timer::new_timer0(cx.device.TIMER0, &mut resets, &clocks);
         let sio = hal::Sio::new(cx.device.SIO);
@@ -154,6 +160,8 @@ mod app {
 
         info!("FC entering main loop - monitoring CAN bus");
         loop {
+            info!("Test RTT log: errors={=u32}", *error_count);  // Continuous test log
+
             cx.shared.token.lock(|token| {
                 if *token {
                     led_pin.set_high().unwrap();

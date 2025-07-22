@@ -15,11 +15,11 @@ embedded-hal = "1.0.0"
 embedded-hal-nb = "1.0.0"
 nb = "1.1.0"
 heapless = "0.8.0"
-rp235x-hal = { version = "0.3.0", features = ["binary-info", "critical-section-impl", "rt"] }
+rp235x-hal = { version = "0.3.0", features = ["binary-info", "critical-section-impl", "rt", "defmt"] }
 rtic = { version = "2.1.1", features = ["thumbv8main-backend"] }
-defmt = "1.0.1"
-defmt-rtt = "1.0.0"
-panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+defmt = "0.3"
+defmt-rtt = "0.4.0"
+panic-halt = "0.2.0"
 
 [profile.dev]
 debug = 2
