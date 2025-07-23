@@ -19,7 +19,7 @@ This document outlines the hardware configurations and pin assignments for the M
     - MISO: GP8
     - CS: GP9
   - **IMU - BMI088**: SPI
-    - CS GYRO: GP22 (SPI0)
+    - CS GYRO: GP20 (SPI0)
     - MOSI: GP19 (SPI0)
     - CLK: GP18 (SPI0)
     - CS ACCEL: GP17 (SPI0)
@@ -30,16 +30,19 @@ This document outlines the hardware configurations and pin assignments for the M
     - MISO: GP12 (SPI1)
     - CS: GP13 (SPI1)
   - **Magnetometer - BMM350**: I2C
-    - SDA: GP4 (I2C0)
-    - SCL: GP5 (I2C0)
+    - SDA: GP22 (I2C0)
+    - SCL: GP21 (I2C0)
   - **IMU - ICM-20948**: I2C
-    - SDA: GP4 (I2C0)
-    - SCL: GP5 (I2C0)
+    - SDA: GP22 (I2C0)
+    - SCL: GP21 (I2C0)
   - **GPS - Ublox NEO-M9N**: UART
     - TX: GP0 (UART0, FC TX to GPS RX)
     - RX: GP1 (UART0, FC RX from GPS TX)
+  - **Debug UART (CP2102 for USB serial)**: UART
+    - TX: GP4 (FC TX to CP2102 RX)
+    - RX: GP5 (FC RX from CP2102 TX)
 
-**Note**: I2C devices are split across two buses: High-frequency sensors (IMU and magnetometer) on I2C0 (GP4 SDA, GP5 SCL); lower-frequency sensors (barometer and RTC) on I2C1 (GP2 SDA, GP3 SCL).
+**Note**: I2C devices are split across two buses: High-frequency sensors (IMU and magnetometer) on I2C0 (GP22 SDA, GP21 SCL); lower-frequency sensors (barometer and RTC) on I2C1 (GP2 SDA, GP3 SCL).
 
 ## Radio
 
