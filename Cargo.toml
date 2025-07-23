@@ -19,7 +19,7 @@ rp235x-hal = { version = "0.3.0", features = ["binary-info", "critical-section-i
 rtic = { version = "2.1.1", features = ["thumbv8main-backend"] }
 defmt = "0.3"
 defmt-rtt = "0.4.0"
-panic-halt = "0.2.0"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
 
 [profile.dev]
 debug = 2

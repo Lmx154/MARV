@@ -160,12 +160,21 @@ mod app {
         let hold_timer = cx.local.hold_timer;
 
         info!("Radio entering main loop - monitoring CAN bus");
+        
+        let mut heartbeat_counter = 0u32;
+        
         loop {
+            // Add heartbeat every 500 loops (5 seconds at 10ms per loop)
+            heartbeat_counter += 1;
+            if heartbeat_counter >= 500 {
+                info!("Radio: Heartbeat - loop iteration {}", heartbeat_counter);
+                heartbeat_counter = 0;
+            }
             cx.shared.token.lock(|token| {
                 if *token {
                     led_pin.set_high().unwrap();
                     *hold_timer += 1;
-                    if *hold_timer >= 40 { // 2 seconds (40 * 50ms)
+                    if *hold_timer >= 200 { // 2 seconds (200 * 10ms)
                         *hold_timer = 0;
                         cx.shared.mcp2515.lock(|mcp2515| {
                             let msg = CanMessage {
@@ -238,7 +247,8 @@ mod app {
                 }
             });
 
-            timer.delay_ms(50);
+            // Shorter delay to allow more frequent RTT flushing
+            timer.delay_ms(10);
         }
     }
 }

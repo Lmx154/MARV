@@ -40,23 +40,13 @@ connect_under_reset = false
 # This is only used when flashing, not when attaching.
 enabled = true
 
-# A list of channel associations to be displayed. You can rename
-# channels here and have them displayed in the RTTUI.
-channels = [
-    # { up = 0, down = 0, name = "name" }
+up_channels = [
+    { channel = 0, mode = "BlockIfFull", format = "Defmt" },
 ]
 
-# The duration in ms for which the logger should retry a failed RTT connection.
-timeout = 3000
-
-# Whether timestamps in the RTTUI are enabled
-show_timestamps = true
-
-# Whether to save rtt history buffer on exit.
-log_enabled = false
-
-# Where to save rtt history buffer relative to manifest path.
-log_path = "./logs"
+tabs = [
+    { up_channel = 0, name = "Log" },
+]
 
 [default.gdb]
 # Whether or not a GDB server should be opened after flashing.
