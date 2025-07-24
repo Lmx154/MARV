@@ -9,7 +9,7 @@ MEMORY {
      * This is usually good for performance, as it distributes load on
      * those banks evenly.
      */
-    RAM : ORIGIN = 0x20000000, LENGTH = 512K
+    RAM : ORIGIN = 0x20000000, LENGTH = 520K
     /*
      * RAM banks 8 and 9 use a direct mapping. They can be used to have
      * memory areas dedicated for some specific job, improving predictability

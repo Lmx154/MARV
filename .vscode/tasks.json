@@ -2,7 +2,52 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "Build GPS Project",
+			"label": "Build FC",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"build",
+				"--bin",
+				"FC"
+			],
+			"group": "build",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "Build Radio",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"build",
+				"--bin",
+				"radio"
+			],
+			"group": "build",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "Build GS",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"build",
+				"--bin",
+				"gs"
+			],
+			"group": "build",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "Build All",
 			"type": "shell",
 			"command": "cargo",
 			"args": [
