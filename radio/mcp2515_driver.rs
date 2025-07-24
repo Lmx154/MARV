@@ -1,4 +1,3 @@
-// radio/mcp2515_driver.rs
 #![allow(dead_code)]
 
 use embedded_hal::delay::DelayNs;
@@ -65,7 +64,7 @@ where
     timer: TIMER,
 }
 
-#[derive(Debug, defmt::Format)]
+#[derive(Debug)]
 pub enum Mcp2515Error {
     SpiError,
     CsError,
