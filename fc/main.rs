@@ -211,8 +211,7 @@ mod app {
 
         info!(uart, "FC entering main loop - monitoring CAN bus");
         loop {
-            info!(uart, "Test log: errors={}", *error_count);  // Continuous test log
-
+    
             cx.shared.token.lock(|token| {
                 if *token {
                     led_pin.set_high().unwrap();
