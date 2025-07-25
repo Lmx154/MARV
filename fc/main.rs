@@ -19,6 +19,7 @@ use core::fmt::Write;
 #[app(device = hal::pac, peripherals = true, dispatchers = [TIMER0_IRQ_1])]
 mod app {
     use super::*;
+    use hal::gpio::bank0;
 
     #[shared]
     struct Shared {
@@ -66,7 +67,7 @@ mod app {
         let i2c_sda = pins.gpio20.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
         let i2c_scl = pins.gpio21.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
         let i2c = I2C::i2c0(cx.device.I2C0, i2c_sda, i2c_scl, HertzU32::kHz(100), &mut resets, clocks.system_clock.freq());
-        let i2c_manager = I2cBusManager::new(i2c);
+        let mut i2c_manager = I2cBusManager::new(i2c);
 
         let mut icm20948 = Icm20948::new(timer.clone(), ICM20948_ADDR_AD0_LOW);
         {
@@ -79,7 +80,6 @@ mod app {
                         let _ = write!(debug_uart, "ICM20948 IMU init failed: {:?}\r\n", e);
                     }
                 }
-                i2c_manager.release();
             } else {
                 let _ = write!(debug_uart, "Could not acquire I2C for IMU init\r\n");
             }

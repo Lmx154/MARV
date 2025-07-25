@@ -15,7 +15,7 @@
 //! - Sensitivity (for scaling reference, not implemented here): 16384 LSB/g (accel ±2g), 131 LSB/dps (gyro ±250 dps)
 //!
 //! Usage Notes:
-//! - Connect via I2C0 (GP20 SDA, GP21 SCL to match hardware capabilities; note: hardware.md has likely typo with GP22 SDA).
+//! - Connect via I2C0 (GP20 SDA, GP21 SCL as per hardware.md correction).
 //! - In main code, read raw data and format as text for UART output (e.g., "Accel: x y z Gyro: x y z").
 //! - Delays in init use the provided Delay trait implementation.
 //! - Burst read for efficiency: Read 12 bytes from ACCEL_XOUT_H (0x2D) to GYRO_ZOUT_L (0x38).
@@ -25,7 +25,8 @@
 use embedded_hal::i2c::I2c;
 use embedded_hal::delay::DelayNs;
 use rp235x_hal as hal;
-use hal::gpio::{Pin, bank0::{Gpio20, Gpio21}, FunctionI2C, PullUp};
+use hal::gpio::bank0;
+use hal::gpio::{Pin, FunctionI2C, PullUp};
 use super::sensor_trait::SensorDriver;
 
 /// ICM-20948 I2C addresses
