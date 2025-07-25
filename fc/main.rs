@@ -2,10 +2,15 @@
 #![no_std]
 #![no_main]
 
+// Tell the Boot ROM about our application
+#[link_section = ".start_block"]
+#[used]
+pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
+
 use panic_halt as _;
 use rp235x_hal as hal;
 use rtic::app;
-use hal::gpio::{Pin, bank0::{Gpio4, Gpio5, Gpio20, Gpio21, Gpio25}, PullNone, PullUp, FunctionUart, FunctionI2C, FunctionSioOutput};
+use hal::gpio::{Pin, bank0::{Gpio4, Gpio5, Gpio20, Gpio21}, PullNone, PullUp, FunctionUart, FunctionI2C};
 use hal::timer::{Timer, CopyableTimer0, Alarm};
 use hal::fugit::{HertzU32, MicrosDurationU32};
 use hal::clocks::Clock;
@@ -13,7 +18,6 @@ use hal::i2c::I2C;
 mod drivers;
 use drivers::bus_managers::I2cBusManager;
 use drivers::icm20948::{Icm20948, RawImu, ICM20948_ADDR_AD0_LOW};
-use drivers::sensor_trait::SensorDriver;
 use core::fmt::Write;
 
 #[app(device = hal::pac, peripherals = true, dispatchers = [TIMER0_IRQ_1])]

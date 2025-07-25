@@ -1,5 +1,4 @@
 // fc/drivers/sensor_trait.rs
-use core::ops::DerefMut;
 
 pub trait SensorDriver {
     type Bus;
