@@ -21,6 +21,7 @@ use drivers::bus_managers::{I2cBusManager, UartBusManager};
 use drivers::pcf8563::{Pcf8563, DateTime as RtcDateTime, Error as RtcError};
 use drivers::ublox_neom9n::{GpsModule, GpsData};
 use drivers::sensor_trait::SensorDriver;
+use drivers::icm20948::{Icm20948, RawImu, ICM20948_ADDR_AD0_LOW};
 use core::fmt::{self, Write};
 use embedded_hal_nb::serial::Write as SerialWrite;
 use heapless::String as HeaplessString;
@@ -29,97 +30,36 @@ pub struct SpiWrapper<S> {
     spi: S,
 }
 
-impl<S> SpiWrapper<S> {
-    fn new(spi: S) -> Self {
-        Self { spi }
-    }
-}
+// fc/main.rs
+#![no_std]
+#![no_main]
 
-impl<S> SimpleSpi for SpiWrapper<S>
-where
-    S: embedded_hal::spi::SpiBus,
-{
-    type Error = S::Error;
-    fn transfer_in_place(&mut self, buffer: &mut [u8]) -> Result<(), Self::Error> {
-        self.spi.transfer_in_place(buffer)
-    }
-}
-
-#[link_section = ".start_block"]
-#[used]
-pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
+use panic_halt as _;
+use rp235x_hal as hal;
+use rtic::app;
+use hal::gpio::{Pin, bank0::{Gpio2, Gpio3, Gpio4, Gpio5}, PullUp, PullNone, FunctionUart, FunctionI2C};
+use hal::timer::{Timer, CopyableTimer0, Event};
+use hal::fugit::{HertzU32, MicrosDurationU32};
+use hal::uart::{UartConfig, UartPeripheral};
+use hal::clocks::Clock;
+use hal::i2c::I2C;
+mod drivers;
+use drivers::icm20948::{Icm20948, ICM20948_ADDR_AD0_LOW};
+use core::fmt::Write;
 
 #[app(device = hal::pac, peripherals = true, dispatchers = [TIMER0_IRQ_1])]
 mod app {
     use super::*;
 
-    struct UartWriter<'a, UART: SerialWrite<u8>> {
-        uart: &'a mut UART,
-    }
-
-    impl<'a, UART: SerialWrite<u8>> fmt::Write for UartWriter<'a, UART> {
-        fn write_str(&mut self, s: &str) -> fmt::Result {
-            for byte in s.bytes() {
-                nb::block!(self.uart.write(byte)).map_err(|_| fmt::Error)?;
-            }
-            Ok(())
-        }
-    }
-
-    macro_rules! info {
-        ($uart:expr, $($arg:tt)*) => {
-            {
-                let mut writer = UartWriter { uart: $uart };
-                let _ = write!(writer, "[INFO] ");
-                let _ = write!(writer, $($arg)*);
-                let _ = writer.write_str("\r\n");
-            }
-        }
-    }
-
-    macro_rules! warn {
-        ($uart:expr, $($arg:tt)*) => {
-            {
-                let mut writer = UartWriter { uart: $uart };
-                let _ = write!(writer, "[WARN] ");
-                let _ = write!(writer, $($arg)*);
-                let _ = writer.write_str("\r\n");
-            }
-        }
-    }
-
-    macro_rules! error_macro {
-        ($uart:expr, $($arg:tt)*) => {
-            {
-                let mut writer = UartWriter { uart: $uart };
-                let _ = write!(writer, "[ERROR] ");
-                let _ = write!(writer, $($arg)*);
-                let _ = writer.write_str("\r\n");
-            }
-        }
-    }
-
     #[shared]
     struct Shared {
-        mcp2515: Mcp2515<SpiWrapper<Spi<hal::spi::Enabled, hal::pac::SPI1, (Pin<Gpio11, FunctionSpi, PullUp>, Pin<Gpio12, FunctionSpi, PullUp>, Pin<Gpio10, FunctionSpi, PullUp>), 8>>, Pin<Gpio13, FunctionSioOutput, PullUp>, Timer<CopyableTimer1>>,
-        token: bool,
-        i2c_manager: I2cBusManager<hal::pac::I2C1, Gpio2, Gpio3>,
-        uart_manager: UartBusManager<hal::pac::UART0, Gpio0, Gpio1>,
+        icm20948: Option<Icm20948<I2C<hal::pac::I2C1, Gpio2, Gpio3>, Timer<CopyableTimer0>>>,
         timer: Timer<CopyableTimer0>,
-        debug_uart: UartPeripheral<uart::Enabled, hal::pac::UART1, (Pin<Gpio4, FunctionUart, PullNone>, Pin<Gpio5, FunctionUart, PullNone>)>,
-    }
-
-    #[local]
-    struct Local {
-        led_pin: Pin<Gpio25, FunctionSioOutput, PullNone>,
-        error_count: u32,
-        hold_timer: u32,
-        rtc: Pcf8563,
-        gps: GpsModule,
+        debug_uart: UartPeripheral<hal::uart::Enabled, hal::pac::UART1, (Pin<Gpio4, FunctionUart, PullNone>, Pin<Gpio5, FunctionUart, PullNone>)>,
     }
 
     #[init]
-    fn init(cx: init::Context) -> (Shared, Local) {
+    fn init(mut cx: init::Context) -> (Shared, ()) {
         let mut resets = cx.device.RESETS;
         let mut watchdog = hal::Watchdog::new(cx.device.WATCHDOG);
 
@@ -131,15 +71,13 @@ mod app {
             cx.device.PLL_USB,
             &mut resets,
             &mut watchdog,
-        )
-        .unwrap();
+        ).unwrap();
 
         let mut timer = Timer::new_timer0(cx.device.TIMER0, &mut resets, &clocks);
-        let sio = hal::Sio::new(cx.device.SIO);
         let pins = hal::gpio::Pins::new(
             cx.device.IO_BANK0,
             cx.device.PADS_BANK0,
-            sio.gpio_bank0,
+            hal::Sio::new(cx.device.SIO).gpio_bank0,
             &mut resets,
         );
 
@@ -147,71 +85,90 @@ mod app {
         let rx_pin = pins.gpio5.into_pull_type::<PullNone>().into_function::<FunctionUart>();
         let uart_pins = (tx_pin, rx_pin);
 
-        let debug_uart = UartPeripheral::new(cx.device.UART1, uart_pins, &mut resets).enable(
+        let mut debug_uart = UartPeripheral::new(cx.device.UART1, uart_pins, &mut resets).enable(
             UartConfig::default(),
             clocks.peripheral_clock.freq(),
         ).unwrap();
 
-        info!(&mut debug_uart, "Early log test");
+        let i2c_sda = pins.gpio2.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
+        let i2c_scl = pins.gpio3.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
+        let mut i2c = I2C::i2c1(cx.device.I2C1, i2c_sda, i2c_scl, HertzU32::kHz(100), &mut resets, clocks.system_clock.freq());
 
-        let mut led_pin = pins.gpio25.into_pull_type::<PullNone>().into_push_pull_output();
-        led_pin.set_high().unwrap(); // Start with LED on (holding token)
-
-        let spi_sclk = pins.gpio10.into_pull_type::<PullUp>().into_function::<FunctionSpi>();
-        let spi_mosi = pins.gpio11.into_pull_type::<PullUp>().into_function::<FunctionSpi>();
-        let spi_miso = pins.gpio12.into_pull_type::<PullUp>().into_function::<FunctionSpi>();
-        let spi = Spi::<_, _, _, 8>::new(cx.device.SPI1, (spi_mosi, spi_miso, spi_sclk))
-            .init(&mut resets, clocks.peripheral_clock.freq(), HertzU32::from_raw(1_000_000), embedded_hal::spi::MODE_0);
-        let spi_wrapper = SpiWrapper::new(spi);
-        let mcp2515_cs = pins.gpio13.into_pull_type::<PullUp>().into_push_pull_output();
-
-        let mcp2515_timer = Timer::new_timer1(cx.device.TIMER1, &mut resets, &clocks);
-        let mut mcp2515 = Mcp2515::new(spi_wrapper, mcp2515_cs, mcp2515_timer);
-
-        info!(&mut debug_uart, "Initializing MCP2515 CAN controller...");
-        match mcp2515.init() {
-            Ok(()) => {
-                info!(&mut debug_uart, "MCP2515 initialization successful");
-                match mcp2515.configure_receive_all() {
-                    Ok(()) => info!(&mut debug_uart, "MCP2515 configured to receive all messages"),
-                    Err(e) => error_macro!(&mut debug_uart, "Failed to configure MCP2515 receive mode: {:?}", e),
+        let mut icm20948: Option<Icm20948<I2C<hal::pac::I2C1, Gpio2, Gpio3>, Timer<CopyableTimer0>>> = None;
+        {
+            let mut imu = Icm20948::new(&mut i2c, ICM20948_ADDR_AD0_LOW, timer.clone());
+            match imu.init() {
+                Ok(()) => {
+                    let _ = write!(debug_uart, "ICM20948 IMU initialized\r\n");
+                    icm20948 = Some(imu);
                 }
-                match mcp2515.test_basic_functionality() {
-                    Ok(()) => {
-                        info!(&mut debug_uart, "MCP2515 basic functionality test passed");
-                        for _ in 0..3 {
-                            led_pin.set_high().unwrap();
-                            timer.delay_ms(100);
-                            led_pin.set_low().unwrap();
-                            timer.delay_ms(100);
-                        }
-                    }
-                    Err(e) => {
-                        warn!(&mut debug_uart, "MCP2515 basic functionality test failed: {:?}", e);
-                        for _ in 0..2 {
-                            led_pin.set_high().unwrap();
-                            timer.delay_ms(100);
-                            led_pin.set_low().unwrap();
-                            timer.delay_ms(100);
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                error_macro!(&mut debug_uart, "MCP2515 initialization failed: {:?}", e);
-                for _ in 0..5 {
-                    led_pin.set_high().unwrap();
-                    timer.delay_ms(50);
-                    led_pin.set_low().unwrap();
-                    timer.delay_ms(50);
+                Err(e) => {
+                    let _ = write!(debug_uart, "ICM20948 IMU init failed: {:?}\r\n", e);
                 }
             }
         }
 
-        let i2c_sda = pins.gpio2.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
-        let i2c_scl = pins.gpio3.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
-        let i2c = I2C::i2c1(cx.device.I2C1, i2c_sda, i2c_scl, HertzU32::kHz(100), &mut resets, clocks.system_clock.freq());
-        let i2c_manager = I2cBusManager::new(i2c);
+        let mut alarm = timer.alarm_0().unwrap();
+        alarm.schedule(MicrosDurationU32::secs(1)).unwrap();
+        timer.listen(Event::Alarm0);
+
+        (Shared { icm20948, timer, debug_uart }, ())
+    }
+
+    #[task(binds = TIMER0_IRQ_0, priority = 2, shared = [icm20948, timer, debug_uart])]
+    fn sensor_read(mut cx: sensor_read::Context) {
+        cx.shared.timer.lock(|timer| {
+            let mut alarm = timer.alarm_0().unwrap();
+            alarm.clear_interrupt();
+            timer.unlisten(Event::Alarm0);
+        });
+
+        cx.shared.icm20948.lock(|imu_opt| {
+            if let Some(imu) = imu_opt {
+                match imu.read_raw() {
+                    Ok(raw) => {
+                        cx.shared.debug_uart.lock(|uart| {
+                            let _ = write!(uart, "IMU Accel: [{}, {}, {}] Gyro: [{}, {}, {}]\r\n", raw.accel[0], raw.accel[1], raw.accel[2], raw.gyro[0], raw.gyro[1], raw.gyro[2]);
+                        });
+                    }
+                    Err(e) => {
+                        cx.shared.debug_uart.lock(|uart| {
+                            let _ = write!(uart, "Failed to read IMU: {:?}\r\n", e);
+                        });
+                    }
+                }
+            } else {
+                cx.shared.debug_uart.lock(|uart| {
+                    let _ = write!(uart, "IMU not initialized\r\n");
+                });
+            }
+        });
+
+        cx.shared.timer.lock(|timer| {
+            let mut alarm = timer.alarm_0().unwrap();
+            alarm.schedule(MicrosDurationU32::secs(1)).unwrap();
+            timer.listen(Event::Alarm0);
+        });
+    }
+}
+        {
+            // Try to acquire I2C for IMU init
+            if let Some(i2c_ref) = i2c_manager.acquire() {
+                let mut imu = Icm20948::new(i2c_ref, ICM20948_ADDR_AD0_LOW, timer.clone());
+                match imu.init() {
+                    Ok(()) => {
+                        info!(&mut debug_uart, "ICM20948 IMU initialized");
+                        icm20948 = Some(imu);
+                    }
+                    Err(e) => {
+                        warn!(&mut debug_uart, "ICM20948 IMU init failed: {:?}", e);
+                    }
+                }
+                i2c_manager.release();
+            } else {
+                warn!(&mut debug_uart, "Could not acquire I2C for IMU init");
+            }
+        }
 
         let gps_tx = pins.gpio0.into_pull_type::<PullNone>().into_function::<FunctionUart>();
         let gps_rx = pins.gpio1.into_pull_type::<PullNone>().into_function::<FunctionUart>();
@@ -229,10 +186,10 @@ mod app {
         timer.listen(Event::Alarm0);
 
         info!(&mut debug_uart, "FC initialization complete - starting main loop");
-        (Shared { mcp2515, token: true, i2c_manager, uart_manager, timer, debug_uart }, Local { led_pin, error_count: 0, hold_timer: 0, rtc, gps })
+        (Shared { mcp2515, token: true, i2c_manager, uart_manager, timer, debug_uart, icm20948 }, Local { led_pin, error_count: 0, hold_timer: 0, rtc, gps })
     }
 
-    #[task(binds = TIMER0_IRQ_0, priority = 2, shared = [i2c_manager, uart_manager, timer, debug_uart], local = [rtc, gps])]
+    #[task(binds = TIMER0_IRQ_0, priority = 2, shared = [i2c_manager, uart_manager, timer, debug_uart, icm20948], local = [rtc, gps])]
     fn sensor_read(mut cx: sensor_read::Context) {
         cx.shared.timer.lock(|timer| {
             let mut alarm = timer.alarm_0().unwrap();
@@ -257,6 +214,30 @@ mod app {
                 warn!(uart, "Failed to read RTC");
             });
         }
+
+        // Read ICM20948 IMU raw data
+        let mut imu_read_ok = false;
+        cx.shared.icm20948.lock(|imu_opt| {
+            if let Some(imu) = imu_opt {
+                match imu.read_raw() {
+                    Ok(raw) => {
+                        cx.shared.debug_uart.lock(|uart| {
+                            info!(uart, "IMU Accel: [{}, {}, {}] Gyro: [{}, {}, {}]", raw.accel[0], raw.accel[1], raw.accel[2], raw.gyro[0], raw.gyro[1], raw.gyro[2]);
+                        });
+                        imu_read_ok = true;
+                    }
+                    Err(e) => {
+                        cx.shared.debug_uart.lock(|uart| {
+                            warn!(uart, "Failed to read IMU: {:?}", e);
+                        });
+                    }
+                }
+            } else {
+                cx.shared.debug_uart.lock(|uart| {
+                    warn!(uart, "IMU not initialized");
+                });
+            }
+        });
 
         read_ok = false;
         cx.shared.uart_manager.lock(|manager| {
