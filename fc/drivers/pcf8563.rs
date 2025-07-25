@@ -1,16 +1,4 @@
-//! PCF8563 Real-Time Clock Driver
-//!
-//! Driver for the NXP PCF8563 I2C Real-Time Clock
-//! 
-//! Features:
-//! - Read/write date and time
-//! - Low power consumption
-//! - Alarm functionality
-//! - Timer functionality
-//! - Clock output
-
-
-
+// fc/drivers/pcf8563.rs
 use embedded_hal::i2c::I2c;
 use core::fmt::Write;
 use heapless::String as HeaplessString;
@@ -29,40 +17,83 @@ mod registers {
     pub const WEEKDAYS: u8 = 0x06;
     pub const CENTURY_MONTHS: u8 = 0x07;
     pub const YEARS: u8 = 0x08;
+    pub const MINUTE_ALARM: u8 = 0x09;
+    pub const HOUR_ALARM: u8 = 0x0A;
+    pub const DAY_ALARM: u8 = 0x0B;
+    pub const WEEKDAY_ALARM: u8 = 0x0C;
+    pub const CLKOUT_CONTROL: u8 = 0x0D;
+    pub const TIMER_CONTROL: u8 = 0x0E;
+    pub const TIMER: u8 = 0x0F;
 }
 
-/// Date and time structure
+/// Date and time structure compatible with PCF8563
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DateTime {
-    pub year: u16,
-    pub month: u8,
-    pub day: u8,
-    pub weekday: u8,
-    pub hour: u8,
-    pub minute: u8,
-    pub second: u8,
+    pub year: u16,    // 2000-2099
+    pub month: u8,    // 1-12
+    pub day: u8,      // 1-31
+    pub weekday: u8,  // 0-6 (0=Sunday)
+    pub hour: u8,     // 0-23
+    pub minute: u8,   // 0-59
+    pub second: u8,   // 0-59
 }
 
 impl DateTime {
+    /// Create a new DateTime with the current date/time from GPS
+    pub fn from_gps(gps_data: &crate::ublox_neom9n::GpsData) -> Self {
+        Self {
+            year: gps_data.year,
+            month: gps_data.month,
+            day: gps_data.day,
+            weekday: 0, // Will be calculated
+            hour: gps_data.hour,
+            minute: gps_data.minute,
+            second: gps_data.second,
+        }
+    }
+
+    /// Calculate day of week (0=Sunday, 1=Monday, etc.)
+    pub fn calculate_weekday(&mut self) {
+        // Zeller's congruence algorithm
+        let mut year = self.year as i32;
+        let mut month = self.month as i32;
+        
+        if month < 3 {
+            month += 12;
+            year -= 1;
+        }
+        
+        let k = year % 100;
+        let j = year / 100;
+        
+        let h = (self.day as i32 + (13 * (month + 1)) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;
+        
+        self.weekday = ((h + 5) % 7 + 1) as u8;
+    }
+
+    /// Format as a readable string
     pub fn format(&self) -> HeaplessString<32> {
         let mut output = HeaplessString::new();
-        let _ = write!(output, "{:02}/{:02}/{:04} {:02}:{:02}:{:02}", 
-            self.month, self.day, self.year, self.hour, self.minute, self.second);
+        let _ = core::write!(output, "{:02}/{:02}/{:04} {:02}:{:02}:{:02}", 
+                           self.month, self.day, self.year,
+                           self.hour, self.minute, self.second);
         output
     }
 }
 
-/// RTC driver errors
+/// PCF8563 RTC driver errors
+#[derive(Debug)]
 pub enum Error {
     I2cError,
     InvalidData,
     ClockNotRunning,
 }
 
-/// PCF8563 RTC driver (stateless; borrows bus)
+/// PCF8563 Real-Time Clock driver
 pub struct Pcf8563;
 
 impl Pcf8563 {
+    /// Read the current date and time from the RTC
     pub fn read_datetime<I: I2c>(&self, i2c: &mut I) -> Result<DateTime, Error> {
         let mut buffer = [0u8; 7];
         i2c.write_read(PCF8563_ADDRESS, &[registers::VL_SECONDS], &mut buffer).map_err(|_| Error::I2cError)?;
@@ -71,7 +102,7 @@ impl Pcf8563 {
             return Err(Error::ClockNotRunning);
         }
 
-        let datetime = DateTime {
+        let mut datetime = DateTime {
             second: bcd_to_bin(buffer[0] & 0x7F),
             minute: bcd_to_bin(buffer[1] & 0x7F),
             hour: bcd_to_bin(buffer[2] & 0x3F),
@@ -81,43 +112,78 @@ impl Pcf8563 {
             year: 2000 + bcd_to_bin(buffer[6]) as u16,
         };
 
-        if datetime.second > 59 || datetime.minute > 59 || datetime.hour > 23 || datetime.day == 0 || datetime.day > 31 || datetime.month == 0 || datetime.month > 12 {
+        if datetime.second > 59 || datetime.minute > 59 || datetime.hour > 23 ||
+           datetime.day == 0 || datetime.day > 31 || datetime.month == 0 || datetime.month > 12 {
             return Err(Error::InvalidData);
         }
 
+        datetime.calculate_weekday();
         Ok(datetime)
     }
 
-    // Additional methods (init, write_datetime) refactored similarly to borrow i2c; omitted for brevity.
-}
+    /// Write date and time to the RTC
+    pub fn write_datetime<I: I2c>(&self, datetime: &DateTime, i2c: &mut I) -> Result<(), Error> {
+        let mut dt = *datetime;
+        dt.calculate_weekday();
 
-// SensorDriver trait stub for demonstration (implement as needed)
-use core::ops::DerefMut;
-pub trait SensorDriver {
-    type Bus;
-    type RawData;
-    type ParsedData;
-    type Error;
+        let buffer = [
+            bin_to_bcd(dt.second) & 0x7F,
+            bin_to_bcd(dt.minute),
+            bin_to_bcd(dt.hour),
+            bin_to_bcd(dt.day),
+            dt.weekday,
+            bin_to_bcd(dt.month),
+            bin_to_bcd((dt.year - 2000) as u8),
+        ];
 
-    fn read_raw(&mut self, bus: impl DerefMut<Target = Self::Bus>) -> Result<Self::RawData, Self::Error>;
-    fn parse(&self, raw: Self::RawData) -> Result<Self::ParsedData, Self::Error>;
+        i2c.write(PCF8563_ADDRESS, &[registers::VL_SECONDS]).map_err(|_| Error::I2cError)?;
+        i2c.write(PCF8563_ADDRESS, &buffer).map_err(|_| Error::I2cError)?;
+
+        Ok(())
+    }
+
+    /// Check if the RTC is running
+    pub fn is_running<I: I2c>(&self, i2c: &mut I) -> Result<bool, Error> {
+        let mut buffer = [0u8; 1];
+        i2c.write_read(PCF8563_ADDRESS, &[registers::VL_SECONDS], &mut buffer).map_err(|_| Error::I2cError)?;
+        Ok(buffer[0] & 0x80 == 0)
+    }
 }
 
 impl SensorDriver for Pcf8563 {
-    type Bus = dyn I2c;
+    type Bus = impl I2c;
     type RawData = [u8; 7];
     type ParsedData = DateTime;
     type Error = Error;
 
-    fn read_raw(&mut self, mut bus: impl DerefMut<Target = Self::Bus>) -> Result<Self::RawData, Self::Error> {
+    fn read_raw(&mut self, bus: &mut impl I2c) -> Result<Self::RawData, Self::Error> {
         let mut buffer = [0u8; 7];
         bus.write_read(PCF8563_ADDRESS, &[registers::VL_SECONDS], &mut buffer).map_err(|_| Error::I2cError)?;
         Ok(buffer)
     }
 
     fn parse(&self, raw: Self::RawData) -> Result<Self::ParsedData, Self::Error> {
-        // Parsing logic from read_datetime (omitted for brevity; mirrors above).
-        unimplemented!() // Complete as needed.
+        if raw[0] & 0x80 != 0 {
+            return Err(Error::ClockNotRunning);
+        }
+
+        let mut datetime = DateTime {
+            second: bcd_to_bin(raw[0] & 0x7F),
+            minute: bcd_to_bin(raw[1] & 0x7F),
+            hour: bcd_to_bin(raw[2] & 0x3F),
+            day: bcd_to_bin(raw[3] & 0x3F),
+            weekday: raw[4] & 0x07,
+            month: bcd_to_bin(raw[5] & 0x1F),
+            year: 2000 + bcd_to_bin(raw[6]) as u16,
+        };
+
+        if datetime.second > 59 || datetime.minute > 59 || datetime.hour > 23 ||
+           datetime.day == 0 || datetime.day > 31 || datetime.month == 0 || datetime.month > 12 {
+            return Err(Error::InvalidData);
+        }
+
+        datetime.calculate_weekday();
+        Ok(datetime)
     }
 }
 
