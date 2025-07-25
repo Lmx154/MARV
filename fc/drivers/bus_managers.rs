@@ -1,11 +1,11 @@
 // fc/drivers/bus_managers.rs
 use rp235x_hal as hal;
 use hal::i2c::{I2C as HalI2C, Error as I2cError};
-use hal::i2c::I2CDevice as I2cInstance;
-use hal::gpio::{Pin, PinId, FunctionI2C, PullUp};
+use hal::i2c::I2cDevice as I2cInstance;
+use hal::gpio::{Pin, PinId, FunctionI2C, PullUp, FunctionUart, PullNone};
 use hal::spi::{Spi as HalSpi, Enabled as SpiEnabled};
 use hal::spi::SpiDevice as SpiInstance;
-use hal::uart::{UartPeripheral, Enabled as UartEnabled};
+use hal::uart::{UartPeripheral, Enabled as UartEnabled, ValidPinTx, ValidPinRx};
 use hal::uart::UartDevice as UartInstance;
 
 pub struct I2cBusManager<P: I2cInstance, SDA: PinId, SCL: PinId> {
@@ -36,12 +36,20 @@ impl<P: I2cInstance, SDA: PinId, SCL: PinId> I2cBusManager<P, SDA, SCL> {
     }
 }
 
-pub struct UartBusManager<U: UartInstance, TX: PinId, RX: PinId> {
+pub struct UartBusManager<U: UartInstance, TX: PinId, RX: PinId>
+where
+    Pin<TX, FunctionUart, PullNone>: ValidPinTx<U>,
+    Pin<RX, FunctionUart, PullNone>: ValidPinRx<U>,
+{
     uart: UartPeripheral<UartEnabled, U, (Pin<TX, FunctionUart, PullNone>, Pin<RX, FunctionUart, PullNone>)>,
     in_use: bool,
 }
 
-impl<U: UartInstance, TX: PinId, RX: PinId> UartBusManager<U, TX, RX> {
+impl<U: UartInstance, TX: PinId, RX: PinId> UartBusManager<U, TX, RX>
+where
+    Pin<TX, FunctionUart, PullNone>: ValidPinTx<U>,
+    Pin<RX, FunctionUart, PullNone>: ValidPinRx<U>,
+{
     pub fn new(uart: UartPeripheral<UartEnabled, U, (Pin<TX, FunctionUart, PullNone>, Pin<RX, FunctionUart, PullNone>)>) -> Self {
         Self { uart, in_use: false }
     }
