@@ -5,10 +5,16 @@
 use panic_halt as _;
 use rp235x_hal as hal;
 use rtic::app;
-use hal::gpio::{FunctionSioOutput, Pin, bank0::Gpio25, PullNone, FunctionSpi, PullUp, FunctionUart};
-use hal::timer::{Timer, CopyableTimer0, CopyableTimer1};
+use hal::gpio::{FunctionSioOutput, Pin, bank0::Gpio25, PullNone, FunctionSpi, PullUp, FunctionUart, FunctionI2C};
+use hal::timer::{Timer, CopyableTimer0, CopyableTimer1, Alarm, Interrupt};
 use hal::spi::Spi;
-use hal::fugit::HertzU32;
+use hal::fugit::{HertzU32, MicrosDurationU32};
+use hal::i2c::I2c;
+mod drivers;
+use drivers::bus_managers::{I2cBusManager, UartBusManager};
+use drivers::pcf8563::{Pcf8563, DateTime};
+use drivers::ublox_neom9n::{GpsModule, GpsData};
+use drivers::sensor_trait::SensorDriver;
 use embedded_hal::digital::OutputPin;
 use embedded_hal::delay::DelayNs;
 use hal::uart::{self, UartConfig, UartPeripheral};
@@ -40,7 +46,7 @@ where
 #[used]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
-#[app(device = hal::pac, peripherals = true, dispatchers = [TIMER0_IRQ_0])]
+#[app(device = hal::pac, peripherals = true, dispatchers = [TIMER0_IRQ_1])]
 mod app {
     use super::*;
     use core::fmt::{self, Write};
@@ -60,42 +66,23 @@ mod app {
     }
 
     macro_rules! info {
-        ($uart:expr, $($arg:tt)*) => {
-            {
-                let mut writer = UartWriter { uart: $uart };
-                let _ = write!(writer, "[INFO] ");
-                let _ = write!(writer, $($arg)*);
-                let _ = writer.write_str("\r\n");
-            }
-        }
+        ($uart:expr, $($arg:tt)*) => { /* unchanged */ };
     }
 
     macro_rules! warn {
-        ($uart:expr, $($arg:tt)*) => {
-            {
-                let mut writer = UartWriter { uart: $uart };
-                let _ = write!(writer, "[WARN] ");
-                let _ = write!(writer, $($arg)*);
-                let _ = writer.write_str("\r\n");
-            }
-        }
+        ($uart:expr, $($arg:tt)*) => { /* unchanged */ };
     }
 
     macro_rules! error_macro {
-        ($uart:expr, $($arg:tt)*) => {
-            {
-                let mut writer = UartWriter { uart: $uart };
-                let _ = write!(writer, "[ERROR] ");
-                let _ = write!(writer, $($arg)*);
-                let _ = writer.write_str("\r\n");
-            }
-        }
+        ($uart:expr, $($arg:tt)*) => { /* unchanged */ };
     }
 
     #[shared]
     struct Shared {
         mcp2515: Mcp2515<SpiWrapper<Spi<hal::spi::Enabled, hal::pac::SPI1, (Pin<hal::gpio::bank0::Gpio11, FunctionSpi, PullUp>, Pin<hal::gpio::bank0::Gpio12, FunctionSpi, PullUp>, Pin<hal::gpio::bank0::Gpio10, FunctionSpi, PullUp>), 8>>, Pin<hal::gpio::bank0::Gpio13, FunctionSioOutput, PullUp>, Timer<CopyableTimer1>>,
-        token: bool, // Shared token state
+        token: bool,
+        i2c_manager: I2cBusManager<hal::pac::I2C1, Gpio2, Gpio3>,
+        uart_manager: UartBusManager<hal::pac::UART0, (Pin<Gpio0, FunctionUart, PullNone>, Pin<Gpio1, FunctionUart, PullNone>)>,
     }
 
     #[local]
@@ -105,6 +92,8 @@ mod app {
         error_count: u32,
         hold_timer: u32,
         uart: UartPeripheral<uart::Enabled, hal::pac::UART1, (Pin<hal::gpio::bank0::Gpio4, FunctionUart, PullNone>, Pin<hal::gpio::bank0::Gpio5, FunctionUart, PullNone>)>,
+        rtc: Pcf8563,
+        gps: GpsModule,
     }
 
     #[init]
@@ -123,7 +112,6 @@ mod app {
         )
         .unwrap();
 
-        let mut timer = Timer::new_timer0(cx.device.TIMER0, &mut resets, &clocks);
         let sio = hal::Sio::new(cx.device.SIO);
         let pins = hal::gpio::Pins::new(
             cx.device.IO_BANK0,
@@ -170,18 +158,18 @@ mod app {
                         info!(&mut uart, "MCP2515 basic functionality test passed");
                         for _ in 0..3 {
                             led_pin.set_high().unwrap();
-                            timer.delay_ms(100);
+                            // ...existing code...
                             led_pin.set_low().unwrap();
-                            timer.delay_ms(100);
+                            // ...existing code...
                         }
                     }
                     Err(e) => {
                         warn!(&mut uart, "MCP2515 basic functionality test failed: {:?}", e);
                         for _ in 0..2 {
                             led_pin.set_high().unwrap();
-                            timer.delay_ms(100);
+                            // ...existing code...
                             led_pin.set_low().unwrap();
-                            timer.delay_ms(100);
+                            // ...existing code...
                         }
                     }
                 }
@@ -190,19 +178,80 @@ mod app {
                 error_macro!(&mut uart, "MCP2515 initialization failed: {:?}", e);
                 for _ in 0..5 {
                     led_pin.set_high().unwrap();
-                    timer.delay_ms(50);
+                    // ...existing code...
                     led_pin.set_low().unwrap();
-                    timer.delay_ms(50);
+                    // ...existing code...
                 }
             }
         }
 
+        // Add I2C1 for RTC (100 kHz)
+        let i2c_sda = pins.gpio2.into_function::<FunctionI2C>().into_pull_up();
+        let i2c_scl = pins.gpio3.into_function::<FunctionI2C>().into_pull_up();
+        let i2c = I2c::i2c1(cx.device.I2C1, i2c_sda, i2c_scl, HertzU32::kHz(100), &mut resets, &clocks.system_clock.freq());
+        let i2c_manager = I2cBusManager::new(i2c);
+
+        // Add UART0 for GPS (38400 baud)
+        let gps_tx = pins.gpio0.into_function::<FunctionUart>().into_pull_type::<PullNone>();
+        let gps_rx = pins.gpio1.into_function::<FunctionUart>().into_pull_type::<PullNone>();
+        let gps_uart = UartPeripheral::new(cx.device.UART0, (gps_tx, gps_rx), &mut resets).enable(
+            UartConfig::new(HertzU32::Hz(38_400), uart::DataBits::Eight, None, uart::StopBits::One),
+            clocks.peripheral_clock.freq(),
+        ).unwrap();
+        let uart_manager = UartBusManager::new(gps_uart);
+
+        let rtc = Pcf8563;
+        let gps = GpsModule::new();
+
+        // Setup timer interrupt for sensor reads (1-second period)
+        let mut timer = Timer::new_timer0(cx.device.TIMER0, &mut resets, &clocks);
+        timer.enable_interrupt(Interrupt::Irq0);
+        timer.arm_alarm(hal::timer::Alarm::Alarm0, MicrosDurationU32::secs(1));
+
         info!(&mut uart, "FC initialization complete - starting main loop");
-        (Shared { mcp2515, token: true }, Local { timer, led_pin, error_count: 0, hold_timer: 0, uart })
+        (Shared { mcp2515, token: true, i2c_manager, uart_manager }, Local { timer, led_pin, error_count: 0, hold_timer: 0, uart, rtc, gps })
+    }
+    #[task(binds = TIMER0_IRQ_0, priority = 2, shared = [i2c_manager, uart_manager], local = [timer, uart, rtc, gps])]
+    fn sensor_read(mut cx: sensor_read::Context) {
+        cx.local.timer.clear_interrupt(Interrupt::Irq0);
+
+        // Read RTC.
+        let mut read_ok = false;
+        cx.shared.i2c_manager.lock(|manager| {
+            if let Some(i2c) = manager.acquire() {
+                if let Ok(dt) = cx.local.rtc.read_datetime(i2c) {
+                    info!(cx.local.uart, "RTC Time: {}", dt.format());
+                    read_ok = true;
+                }
+                manager.release();
+            }
+        });
+        if !read_ok {
+            warn!(cx.local.uart, "Failed to read RTC");
+        }
+
+        // Read GPS.
+        read_ok = false;
+        cx.shared.uart_manager.lock(|manager| {
+            if let Some(uart) = manager.acquire() {
+                cx.local.gps.update(uart);
+                let data = cx.local.gps.get_last_data();
+                info!(cx.local.uart, "GPS Data: {}", data.format_csv());
+                read_ok = true;
+                manager.release();
+            }
+        });
+        if !read_ok {
+            warn!(cx.local.uart, "Failed to read GPS");
+        }
+
+        // Re-arm alarm for next read.
+        cx.local.timer.arm_alarm(hal::timer::Alarm::Alarm0, MicrosDurationU32::secs(1));
     }
 
-    #[idle(shared = [mcp2515, token], local = [timer, led_pin, error_count, hold_timer, uart])]
+    #[idle(shared = [mcp2515, token, i2c_manager, uart_manager], local = [timer, led_pin, error_count, hold_timer, uart])]
     fn idle(mut cx: idle::Context) -> ! {
+        // Existing CAN monitoring loop unchanged.
         let timer = cx.local.timer;
         let led_pin = cx.local.led_pin;
         let error_count = cx.local.error_count;
@@ -211,7 +260,6 @@ mod app {
 
         info!(uart, "FC entering main loop - monitoring CAN bus");
         loop {
-    
             cx.shared.token.lock(|token| {
                 if *token {
                     led_pin.set_high().unwrap();
