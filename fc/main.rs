@@ -13,6 +13,7 @@ use embedded_hal::delay::DelayNs;
 // Import the ICM20948 driver
 mod drivers;
 use drivers::icm20948::{Icm20948, ICM20948_ADDR_AD0_HIGH};
+use drivers::bus_managers::I2cBusManager;
 mod tools;
 
 // Boot ROM image definition (required for RP2350 boot process)
@@ -72,7 +73,7 @@ fn main() -> ! {
     let i2c0_scl = pins.gpio21.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
 
     // Initialize I2C0 at 100 kHz
-    let mut i2c0 = hal::i2c::I2C::i2c0(
+    let i2c0 = hal::i2c::I2C::i2c0(
         pac.I2C0,
         i2c0_sda,
         i2c0_scl,
@@ -80,6 +81,9 @@ fn main() -> ! {
         &mut resets,
         clocks.system_clock.freq(),
     );
+
+    // Wrap in bus manager
+    let mut i2c0_manager = I2cBusManager::<hal::pac::I2C0, hal::gpio::bank0::Gpio20, hal::gpio::bank0::Gpio21>::new(i2c0);
 
     // Configure I2C1 pins: GP2 (SDA), GP3 (SCL)
     let i2c1_sda = pins.gpio2.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
@@ -96,14 +100,16 @@ fn main() -> ! {
     );
 
     // Scan I2C buses to confirm devices
-    tools::i2cscanner::scan_i2c_bus(&mut i2c0, &mut uart, "I2C0");
+    tools::i2cscanner::scan_i2c_bus(&mut i2c0_manager.acquire().unwrap(), &mut uart, "I2C0");
+    i2c0_manager.release();
     tools::i2cscanner::scan_i2c_bus(&mut i2c1, &mut uart, "I2C1");
 
     // Initialize ICM20948 with timer as delay provider
     let mut icm = Icm20948::new(timer, ICM20948_ADDR_AD0_HIGH);
 
-    // Initialize the IMU
-    match icm.init(&mut i2c0) {
+    // Initialize the IMU using bus manager
+    let mut bus = i2c0_manager.acquire().unwrap();
+    match icm.init(&mut bus) {
         Ok(()) => {
             let _ = writeln!(uart, "ICM20948 IMU initialized\r\n");
         }
@@ -112,12 +118,35 @@ fn main() -> ! {
             // Continue despite failure to allow partial operation
         }
     }
+    i2c0_manager.release();
+
+    // Verify key registers post-init
+    let mut bus = i2c0_manager.acquire().unwrap();
+    let pwr_mgmt_1 = icm.read_register(&mut bus, drivers::icm20948::registers::PWR_MGMT_1).unwrap_or(0xFF);
+    let _ = writeln!(uart, "PWR_MGMT_1 read-back: 0x{:02X}\r\n", pwr_mgmt_1);  // Should be 0x01
+    // Switch to Bank 2 to check configs
+    let _ = icm.write_register(&mut bus, drivers::icm20948::registers::REG_BANK_SEL, 0x20);
+    let gyro_config_1 = icm.read_register(&mut bus, drivers::icm20948::registers::GYRO_CONFIG_1).unwrap_or(0xFF);
+    let _ = writeln!(uart, "GYRO_CONFIG_1 read-back: 0x{:02X}\r\n", gyro_config_1);  // Should be 0x00
+    let accel_config = icm.read_register(&mut bus, drivers::icm20948::registers::ACCEL_CONFIG).unwrap_or(0xFF);
+    let _ = writeln!(uart, "ACCEL_CONFIG read-back: 0x{:02X}\r\n", accel_config);  // Should be 0x00
+    // Back to Bank 0
+    let _ = icm.write_register(&mut bus, drivers::icm20948::registers::REG_BANK_SEL, 0x00);
+    i2c0_manager.release();
 
     icm.delay.delay_ms(200u32); // Delay after init
 
     // Main loop: Read and send IMU data
     loop {
-        match icm.read_raw(&mut i2c0) {
+        let mut bus = i2c0_manager.acquire().unwrap();
+        // Check data ready status
+        let int_status = icm.read_register(&mut bus, 0x1A).unwrap_or(0x00);  // INT_STATUS (Bank 0, 0x1A), bit 0 = RAW_DATA_RDY
+        let _ = writeln!(uart, "Data ready status: 0x{:02X}\r\n", int_status);
+        if int_status & 0x01 == 0 {
+            let _ = writeln!(uart, "Warning: No new data ready\r\n");
+        }
+
+        match icm.read_raw(&mut bus) {
             Ok(raw) => {
                 let _ = writeln!(
                     uart,
@@ -131,6 +160,7 @@ fn main() -> ! {
                 let _ = writeln!(uart, "Failed to read IMU: {:?}\r\n", e);
             }
         }
+        i2c0_manager.release();
 
         // Delay for 1 second
         icm.delay.delay_ms(1000u32);
