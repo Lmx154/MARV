@@ -7,10 +7,13 @@ This document outlines the hardware configurations and pin assignments for the M
 - **Microcontroller (MC)**: Raspberry Pi Pico 2 - RP2350A
 
 - **Sensors and Interfaces**:
-  - **RTC - PCF8563P**: I2C
+  - **RTC - PCF8563P (0x51)**: I2C
     - SDA: GP2 (I2C1)
     - SCL: GP3 (I2C1)
-  - **Barometer - BMP388**: I2C
+  - **Barometer - BMP388 (0x77)**: I2C
+    - SDA: GP2 (I2C1)
+    - SCL: GP3 (I2C1)
+  - **Barometer - MS5611-01BA03 (0x76)**: I2C
     - SDA: GP2 (I2C1)
     - SCL: GP3 (I2C1)
   - **SD Card Storage**: SPI (not using dedicated SPI controller)
@@ -29,11 +32,11 @@ This document outlines the hardware configurations and pin assignments for the M
     - MOSI: GP11 (SPI1)
     - MISO: GP12 (SPI1)
     - CS: GP13 (SPI1)
-  - **Magnetometer - BMM350**: I2C
-    - SDA: GP22 (I2C0)
+  - **Magnetometer - BMM350 (0x14)**: I2C
+    - SDA: GP20 (I2C0)
     - SCL: GP21 (I2C0)
-  - **IMU - ICM-20948**: I2C
-    - SDA: GP22 (I2C0)
+  - **IMU - ICM-20948 (0x69)**: I2C
+    - SDA: GP20 (I2C0)
     - SCL: GP21 (I2C0)
   - **GPS - Ublox NEO-M9N**: UART
     - TX: GP0 (UART0, FC TX to GPS RX)
@@ -42,7 +45,7 @@ This document outlines the hardware configurations and pin assignments for the M
     - TX: GP4 (FC TX to CP2102 RX)
     - RX: GP5 (FC RX from CP2102 TX)
 
-**Note**: I2C devices are split across two buses: High-frequency sensors (IMU and magnetometer) on I2C0 (GP22 SDA, GP21 SCL); lower-frequency sensors (barometer and RTC) on I2C1 (GP2 SDA, GP3 SCL).
+**Note**: I2C devices are split across two buses: High-frequency sensors (IMU and magnetometer) on I2C0 (GP20 SDA, GP21 SCL); lower-frequency sensors (barometer and RTC) on I2C1 (GP2 SDA, GP3 SCL).
 
 ## Radio
 
@@ -66,3 +69,4 @@ This document outlines the hardware configurations and pin assignments for the M
   - **LoRa Radio - E32900T30D**: UART
     - TX: GP0 (UART0)
     - RX: GP1 (UART0)
+

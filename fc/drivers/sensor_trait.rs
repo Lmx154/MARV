@@ -1,4 +1,14 @@
-// sensor_trait.rs
-// Placeholder for common sensor trait definition
+// fc/drivers/sensor_trait.rs
 
-// TODO: Define common trait for sensors
+pub trait SensorDriver {
+    type Bus;
+    type RawData;
+    type ParsedData;
+    type Error;
+
+    fn read_raw(&mut self, bus: &mut Self::Bus) -> Result<Self::RawData, Self::Error>;
+
+    fn parse(&self, raw: Self::RawData) -> Result<Self::ParsedData, Self::Error>;
+
+    fn calibrate(&mut self, _params: &()) -> bool { true }
+}

@@ -13,7 +13,7 @@ Key principles include:
 
 ### Flight Controller (FC)
 - **Sensors to FC Interfaces**:
-  - **I2C Devices**: BMP388 barometer and PCF8563 RTC on I2C1 (GP2 SDA, GP3 SCL); BMM350 magnetometer and ICM-20948 IMU on I2C0 (GP4 SDA, GP5 SCL). Bus managers in the hardware layer ensure exclusive access with timeouts. Data acquisition uses DMA for efficiency, parsing raw bytes into calibrated structures (e.g., fixed-point pressure or quaternion orientations).
+  - **I2C Devices**: BMP388 barometer and PCF8563 RTC on I2C1 (GP2 SDA, GP3 SCL); BMM350 magnetometer and ICM-20948 IMU on I2C0 (GP20 SDA, GP21 SCL). Bus managers in the hardware layer ensure exclusive access with timeouts. Data acquisition uses DMA for efficiency, parsing raw bytes into calibrated structures (e.g., fixed-point pressure or quaternion orientations).
   - **SPI Devices**: BMI088 IMU and SD card on SPI0; MCP2515 CAN controller on SPI1. Trait-based drivers handle chip selects and transfers, offloading to DMA where possible.
   - **UART Devices**: Ublox NEO-M9N GPS on UART0 (GP0 TX, GP1 RX). DMA RX buffers incoming NMEA/UBX sentences, parsed into position/velocity data.
 - **Internal Data Flow to Algorithms**:
