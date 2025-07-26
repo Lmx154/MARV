@@ -30,10 +30,10 @@ This document outlines the hardware configurations and pin assignments for the M
     - MISO: GP12 (SPI1)
     - CS: GP13 (SPI1)
   - **Magnetometer - BMM350**: I2C
-    - SDA: GP22 (I2C0)
+    - SDA: GP20 (I2C0)
     - SCL: GP21 (I2C0)
   - **IMU - ICM-20948**: I2C
-    - SDA: GP22 (I2C0)
+    - SDA: GP20 (I2C0)
     - SCL: GP21 (I2C0)
   - **GPS - Ublox NEO-M9N**: UART
     - TX: GP0 (UART0, FC TX to GPS RX)
