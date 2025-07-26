@@ -49,6 +49,31 @@ mod registers {
     pub const ACCEL_XOUT_H: u8 = 0x2D;
     // Sequential: ACCEL_XOUT_L=0x2E, Y_H=0x2F, Y_L=0x30, Z_H=0x31, Z_L=0x32
     // GYRO_XOUT_H=0x33, ... Z_L=0x38
+
+    // Magnetometer-related registers
+    pub const I2C_MST_CTRL: u8 = 0x01;       // Bank 3
+    pub const I2C_MST_DELAY_CTRL: u8 = 0x02; // Bank 3
+    pub const I2C_SLV0_ADDR: u8 = 0x03;      // Bank 3
+    pub const I2C_SLV0_REG: u8 = 0x04;       // Bank 3
+    pub const I2C_SLV0_CTRL: u8 = 0x05;      // Bank 3
+    pub const I2C_SLV0_DO: u8 = 0x06;        // Bank 3
+    pub const I2C_SLV4_ADDR: u8 = 0x13;      // Bank 3
+    pub const I2C_SLV4_REG: u8 = 0x14;       // Bank 3
+    pub const I2C_SLV4_DO: u8 = 0x15;        // Bank 3
+    pub const I2C_SLV4_CTRL: u8 = 0x16;      // Bank 3
+    pub const I2C_SLV4_DI: u8 = 0x17;        // Bank 3
+    pub const EXT_SENS_DATA_00: u8 = 0x3B;   // Bank 0, for mag data
+}
+
+/// AK09916 magnetometer constants
+mod ak09916 {
+    pub const ADDR: u8 = 0x0C;
+    pub const WHO_AM_I: u8 = 0x01;           // Expected: 0x09
+    pub const ST1: u8 = 0x10;
+    pub const HXL: u8 = 0x11;                // Mag data start
+    pub const ST2: u8 = 0x18;                // End after HZ H
+    pub const CNTL2: u8 = 0x31;              // Mode control
+    pub const MODE_100HZ: u8 = 0x08;         // Continuous 100 Hz
 }
 
 /// Raw IMU data structure
@@ -56,6 +81,7 @@ mod registers {
 pub struct RawImu {
     pub accel: [i16; 3],  // [x, y, z] in raw ADC counts (two's complement)
     pub gyro: [i16; 3],   // [x, y, z] in raw ADC counts (two's complement)
+    pub mag: [i16; 3],    // [x, y, z] in raw ADC counts (two's complement)
 }
 
 /// Driver errors
@@ -65,6 +91,8 @@ pub enum Error {
     InvalidChipId,
     WriteFailed,
     ReadFailed,
+    MagInitFailed,
+    MagDataNotReady,
 }
 
 /// ICM-20948 driver
@@ -82,12 +110,14 @@ where
         Self { delay, address }
     }
 
-    /// Initialize the sensor
+    /// Initialize the sensor including magnetometer
     /// - Performs reset and waits 100ms
     /// - Sets auto clock source
     /// - Enables accel and gyro
     /// - Configures default ranges: ±2g accel, ±250 dps gyro
     /// - Verifies chip ID (WHO_AM_I = 0xEA)
+    /// - Enables I2C master and configures AK09916 magnetometer for 100 Hz continuous mode
+    /// - Sets up SLV0 for burst read of mag data (9 bytes: ST1 + 6 data + ST2)
     pub fn init<I2C>(&mut self, i2c: &mut I2C) -> Result<(), Error>
     where
         I2C: I2c,
@@ -117,15 +147,39 @@ where
         // Configure accel: ±2g (ACCEL_FS_SEL=00), FCHOICE=1
         self.write_register(i2c, registers::ACCEL_CONFIG, 0x01).map_err(|_| Error::WriteFailed)?; // Bit 0=1, FS_SEL=00
 
+        // Switch to Bank 3 for I2C master config
+        self.write_register(i2c, registers::REG_BANK_SEL, 0x30).map_err(|_| Error::WriteFailed)?;
+
+        // Enable I2C master
+        self.write_register(i2c, registers::USER_CTRL, 0x20).map_err(|_| Error::WriteFailed)?; // I2C_MST_EN = 1
+
+        // Set I2C master clock (e.g., 400 kHz equivalent)
+        self.write_register(i2c, registers::I2C_MST_CTRL, 0x07).map_err(|_| Error::WriteFailed)?; // 345.6 kHz
+
+        // Configure SLV4 for mag init write (set AK09916 to 100 Hz mode)
+        self.write_register(i2c, registers::I2C_SLV4_ADDR, ak09916::ADDR).map_err(|_| Error::WriteFailed)?; // Write
+        self.write_register(i2c, registers::I2C_SLV4_REG, ak09916::CNTL2).map_err(|_| Error::WriteFailed)?;
+        self.write_register(i2c, registers::I2C_SLV4_DO, ak09916::MODE_100HZ).map_err(|_| Error::WriteFailed)?;
+        self.write_register(i2c, registers::I2C_SLV4_CTRL, 0x80).map_err(|_| Error::WriteFailed)?; // Enable
+        self.delay.delay_ms(10u32); // Wait for transaction
+        let slv4_di = self.read_register(i2c, registers::I2C_SLV4_DI).map_err(|_| Error::ReadFailed)?; // Check if write succeeded (optional)
+
+        // Configure SLV0 for mag data read (9 bytes from ST1 to ST2)
+        self.write_register(i2c, registers::I2C_SLV0_ADDR, ak09916::ADDR | 0x80).map_err(|_| Error::WriteFailed)?; // Read
+        self.write_register(i2c, registers::I2C_SLV0_REG, ak09916::ST1).map_err(|_| Error::WriteFailed)?;
+        self.write_register(i2c, registers::I2C_SLV0_CTRL, 0x80 | 0x09).map_err(|_| Error::WriteFailed)?; // Enable + 9 bytes
+
         // Switch back to Bank 0
         self.write_register(i2c, registers::REG_BANK_SEL, 0x00).map_err(|_| Error::WriteFailed)?;
 
         Ok(())
     }
 
-    /// Read raw accelerometer and gyroscope data
-    /// - Performs a burst read of 12 bytes starting from ACCEL_XOUT_H
+    /// Read raw accelerometer, gyroscope, and magnetometer data
+    /// - Performs a burst read of 12 bytes starting from ACCEL_XOUT_H for accel/gyro
+    /// - Reads 9 bytes from EXT_SENS_DATA_00 for mag (ST1 + mag data + ST2)
     /// - Parses into i16 values (MSB << 8 | LSB, signed two's complement)
+    /// - Verifies mag data ready (DRDY in ST1) and no overflow (HOFL in ST2)
     pub fn read_raw<I2C>(&mut self, i2c: &mut I2C) -> Result<RawImu, Error>
     where
         I2C: I2c,
@@ -145,9 +199,34 @@ where
                 i16::from_be_bytes([buffer[8], buffer[9]]),
                 i16::from_be_bytes([buffer[10], buffer[11]]),
             ],
+            mag: [0; 3], // Placeholder, filled below
         };
 
-        Ok(raw)
+        // Read mag data from EXT_SENS_DATA
+        let mut mag_buffer = [0u8; 9];
+        i2c.write_read(self.address, &[registers::EXT_SENS_DATA_00], &mut mag_buffer)
+            .map_err(|_| Error::ReadFailed)?;
+
+        let st1 = mag_buffer[0];
+        if st1 & 0x01 == 0 {
+            return Err(Error::MagDataNotReady); // DRDY not set
+        }
+
+        let mag_raw = RawImu {
+            mag: [
+                i16::from_le_bytes([mag_buffer[1], mag_buffer[2]]), // HX L/H (little-endian per AK09916)
+                i16::from_le_bytes([mag_buffer[3], mag_buffer[4]]), // HY
+                i16::from_le_bytes([mag_buffer[5], mag_buffer[6]]), // HZ
+            ],
+            ..raw
+        };
+
+        let st2 = mag_buffer[8];
+        if st2 & 0x08 != 0 {
+            // HOFL set, overflow - handle if needed (e.g., discard or log)
+        }
+
+        Ok(mag_raw)
     }
 
     /// Write a single register

@@ -145,9 +145,10 @@ mod app {
 
         if let Some(raw) = raw_data {
             cx.shared.debug_uart.lock(|uart| {
-                let _ = write!(uart, "(IMU1: accel: {}, {}, {} ; gyro: {}, {}, {} ;)\r\n",
+                let _ = write!(uart, "IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {}\r\n",
                     raw.accel[0], raw.accel[1], raw.accel[2],
-                    raw.gyro[0], raw.gyro[1], raw.gyro[2]);
+                    raw.gyro[0], raw.gyro[1], raw.gyro[2],
+                    raw.mag[0], raw.mag[1], raw.mag[2]);
             });
         } else {
             cx.shared.debug_uart.lock(|uart| {
