@@ -23,6 +23,31 @@ mod tools;
 
 #[app(device = hal::pac, peripherals = true, dispatchers = [TIMER0_IRQ_1])]
 mod app {
+    #[idle(shared = [timer, debug_uart])]
+    fn idle(mut cx: idle::Context) -> ! {
+        let mut counter = 0u32;
+        loop {
+            cx.shared.timer.lock(|timer| {
+                let current_count = timer.get_counter_low();
+                if counter % 1000 == 0 {
+                    cx.shared.debug_uart.lock(|uart| {
+                        let _ = write!(uart, "Timer count: {}\r\n", current_count);
+                    });
+                }
+            if let Some(mut alarm) = timer.alarm_0() {
+                if alarm.finished() {
+                    cx.shared.debug_uart.lock(|uart| {
+                        let _ = write!(uart, "Alarm finished but task not triggered\r\n");
+                    });
+                    alarm.clear_interrupt();
+                }
+            }
+                counter += 1;
+            });
+            // Busy wait for ~1ms to avoid flooding UART
+            for _ in 0..10000 {}
+        }
+    }
     use super::*;
     use hal::gpio::bank0;
 
@@ -43,6 +68,7 @@ mod app {
         let mut resets = cx.device.RESETS;
         let mut watchdog = hal::Watchdog::new(cx.device.WATCHDOG);
 
+
         let clocks = hal::clocks::init_clocks_and_plls(
             12_000_000u32,
             cx.device.XOSC,
@@ -52,6 +78,9 @@ mod app {
             &mut resets,
             &mut watchdog,
         ).unwrap();
+
+        // Enable 1 MHz timer tick generation from 12 MHz reference clock
+        watchdog.enable_tick_generation(12);
 
         let mut timer = Timer::new_timer0(cx.device.TIMER0, &mut resets, &clocks);
         let pins = hal::gpio::Pins::new(
@@ -109,6 +138,12 @@ mod app {
         let mut alarm = timer.alarm_0().unwrap();
         alarm.schedule(MicrosDurationU32::secs(1)).unwrap();
         alarm.enable_interrupt();
+
+        // Unmask TIMER0_IRQ_0 interrupt at the NVIC level (required for Cortex-M33)
+        use cortex_m::peripheral::NVIC;
+        unsafe {
+            NVIC::unmask(hal::pac::Interrupt::TIMER0_IRQ_0);
+        }
 
         (Shared { i2c0_manager, i2c1_manager, icm20948, timer, debug_uart }, Local {})
     }
