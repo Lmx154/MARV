@@ -17,7 +17,7 @@ use hal::clocks::Clock;
 use hal::i2c::I2C;
 mod drivers;
 use drivers::bus_managers::I2cBusManager;
-use drivers::icm20948::{Icm20948, RawImu, ICM20948_ADDR_AD0_LOW};
+use drivers::icm20948::{Icm20948, RawImu, ICM20948_ADDR_AD0_HIGH};
 use core::fmt::Write;
 mod tools;
 
@@ -90,7 +90,7 @@ mod app {
 
         let i2c1_manager = I2cBusManager::new(i2c1);
 
-        let mut icm20948 = Icm20948::new(timer.clone(), ICM20948_ADDR_AD0_LOW);
+        let mut icm20948 = Icm20948::new(timer.clone(), ICM20948_ADDR_AD0_HIGH);
         {
             if let Some(i2c_ref) = i2c0_manager.acquire() {
                 match icm20948.init(i2c_ref) {
