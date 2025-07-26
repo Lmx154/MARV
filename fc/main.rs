@@ -8,10 +8,12 @@ use core::fmt::Write;
 use panic_halt as _;
 use hal::fugit::RateExtU32;
 use hal::gpio::{FunctionI2C, PullUp};
+use embedded_hal::delay::DelayNs;
 
 // Import the ICM20948 driver
 mod drivers;
-use drivers::icm20948::{Icm20948, ICM20948_ADDR_AD0_HIGH, Error};
+use drivers::icm20948::{Icm20948, ICM20948_ADDR_AD0_HIGH};
+mod tools;
 
 // Boot ROM image definition (required for RP2350 boot process)
 #[link_section = ".start_block"]
@@ -41,7 +43,7 @@ fn main() -> ! {
 
     // Initialize SIO and pins
     let sio = hal::Sio::new(pac.SIO);
-    let mut pins = hal::gpio::Pins::new(
+    let pins = hal::gpio::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
         sio.gpio_bank0,
@@ -62,37 +64,60 @@ fn main() -> ! {
     // Initialize timer for delays
     let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut resets, &clocks);
 
+    // Delay for stabilization after power-on
+    timer.delay_ms(200u32);
+
     // Configure I2C0 pins: GP20 (SDA), GP21 (SCL)
-    let i2c_sda = pins.gpio20.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
-    let i2c_scl = pins.gpio21.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
+    let i2c0_sda = pins.gpio20.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
+    let i2c0_scl = pins.gpio21.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
 
     // Initialize I2C0 at 100 kHz
-    let mut i2c = hal::i2c::I2C::i2c0(
+    let mut i2c0 = hal::i2c::I2C::i2c0(
         pac.I2C0,
-        i2c_sda,
-        i2c_scl,
+        i2c0_sda,
+        i2c0_scl,
         100u32.kHz(),
         &mut resets,
         clocks.system_clock.freq(),
     );
 
+    // Configure I2C1 pins: GP2 (SDA), GP3 (SCL)
+    let i2c1_sda = pins.gpio2.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
+    let i2c1_scl = pins.gpio3.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
+
+    // Initialize I2C1 at 100 kHz
+    let mut i2c1 = hal::i2c::I2C::i2c1(
+        pac.I2C1,
+        i2c1_sda,
+        i2c1_scl,
+        100u32.kHz(),
+        &mut resets,
+        clocks.system_clock.freq(),
+    );
+
+    // Scan I2C buses to confirm devices
+    tools::i2cscanner::scan_i2c_bus(&mut i2c0, &mut uart, "I2C0");
+    tools::i2cscanner::scan_i2c_bus(&mut i2c1, &mut uart, "I2C1");
+
     // Initialize ICM20948 with timer as delay provider
     let mut icm = Icm20948::new(timer, ICM20948_ADDR_AD0_HIGH);
 
     // Initialize the IMU
-    match icm.init(&mut i2c) {
+    match icm.init(&mut i2c0) {
         Ok(()) => {
             let _ = writeln!(uart, "ICM20948 IMU initialized\r\n");
         }
         Err(e) => {
             let _ = writeln!(uart, "ICM20948 IMU init failed: {:?}\r\n", e);
-            loop {} // Halt on failure for simplicity
+            // Continue despite failure to allow partial operation
         }
     }
 
+    icm.delay.delay_ms(200u32); // Delay after init
+
     // Main loop: Read and send IMU data
     loop {
-        match icm.read_raw(&mut i2c) {
+        match icm.read_raw(&mut i2c0) {
             Ok(raw) => {
                 let _ = writeln!(
                     uart,

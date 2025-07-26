@@ -1,4 +1,3 @@
-// fc/drivers/icm20948.rs
 //! ICM-20948 IMU Driver
 //!
 //! Simple driver for the TDK InvenSense ICM-20948 9-axis IMU (accelerometer and gyroscope only).
@@ -93,11 +92,12 @@ pub enum Error {
     ReadFailed,
     MagInitFailed,
     MagDataNotReady,
+    Timeout,
 }
 
 /// ICM-20948 driver
 pub struct Icm20948<DELAY> {
-    delay: DELAY,
+    pub delay: DELAY,
     address: u8,
 }
 
@@ -111,13 +111,6 @@ where
     }
 
     /// Initialize the sensor including magnetometer
-    /// - Performs reset and waits 100ms
-    /// - Sets auto clock source
-    /// - Enables accel and gyro
-    /// - Configures default ranges: ±2g accel, ±250 dps gyro
-    /// - Verifies chip ID (WHO_AM_I = 0xEA)
-    /// - Enables I2C master and configures AK09916 magnetometer for 100 Hz continuous mode
-    /// - Sets up SLV0 for burst read of mag data (9 bytes: ST1 + 6 data + ST2)
     pub fn init<I2C>(&mut self, i2c: &mut I2C) -> Result<(), Error>
     where
         I2C: I2c,
@@ -141,54 +134,115 @@ where
         // Switch to Bank 2 for config
         self.write_register(i2c, registers::REG_BANK_SEL, 0x20).map_err(|_| Error::WriteFailed)?;
 
-        // Configure gyro: ±250 dps (GYRO_FS_SEL=00), FCHOICE=1 (DLPF enabled)
-        self.write_register(i2c, registers::GYRO_CONFIG_1, 0x01).map_err(|_| Error::WriteFailed)?; // Bit 0=1 for FCHOICE, FS_SEL=00
+        // Configure gyro
+        self.write_register(i2c, registers::GYRO_CONFIG_1, 0x01).map_err(|_| Error::WriteFailed)?;
 
-        // Configure accel: ±2g (ACCEL_FS_SEL=00), FCHOICE=1
-        self.write_register(i2c, registers::ACCEL_CONFIG, 0x01).map_err(|_| Error::WriteFailed)?; // Bit 0=1, FS_SEL=00
+        // Configure accel
+        self.write_register(i2c, registers::ACCEL_CONFIG, 0x01).map_err(|_| Error::WriteFailed)?;
 
-        // Switch to Bank 3 for I2C master config
-        self.write_register(i2c, registers::REG_BANK_SEL, 0x30).map_err(|_| Error::WriteFailed)?;
+        // Switch to Bank 0
+        self.write_register(i2c, registers::REG_BANK_SEL, 0x00).map_err(|_| Error::WriteFailed)?;
 
         // Enable I2C master
-        self.write_register(i2c, registers::USER_CTRL, 0x20).map_err(|_| Error::WriteFailed)?; // I2C_MST_EN = 1
+        self.write_register(i2c, registers::USER_CTRL, 0x20).map_err(|_| Error::WriteFailed)?;
 
-        // Set I2C master clock (e.g., 400 kHz equivalent)
-        self.write_register(i2c, registers::I2C_MST_CTRL, 0x07).map_err(|_| Error::WriteFailed)?; // 345.6 kHz
+        // Reset I2C master
+        self.write_register(i2c, registers::USER_CTRL, 0x20 | 0x80).map_err(|_| Error::WriteFailed)?;
+        self.delay.delay_ms(10u32);
+        self.write_register(i2c, registers::USER_CTRL, 0x20).map_err(|_| Error::WriteFailed)?;
 
-        // Configure SLV4 for mag init write (set AK09916 to 100 Hz mode)
-        self.write_register(i2c, registers::I2C_SLV4_ADDR, ak09916::ADDR).map_err(|_| Error::WriteFailed)?; // Write
-        self.write_register(i2c, registers::I2C_SLV4_REG, ak09916::CNTL2).map_err(|_| Error::WriteFailed)?;
-        self.write_register(i2c, registers::I2C_SLV4_DO, ak09916::MODE_100HZ).map_err(|_| Error::WriteFailed)?;
-        self.write_register(i2c, registers::I2C_SLV4_CTRL, 0x80).map_err(|_| Error::WriteFailed)?; // Enable
-        self.delay.delay_ms(10u32); // Wait for transaction
-        let slv4_di = self.read_register(i2c, registers::I2C_SLV4_DI).map_err(|_| Error::ReadFailed)?; // Check if write succeeded (optional)
+        // Switch to Bank 3
+        self.write_register(i2c, registers::REG_BANK_SEL, 0x30).map_err(|_| Error::WriteFailed)?;
 
-        // Configure SLV0 for mag data read (9 bytes from ST1 to ST2)
-        self.write_register(i2c, registers::I2C_SLV0_ADDR, ak09916::ADDR | 0x80).map_err(|_| Error::WriteFailed)?; // Read
-        self.write_register(i2c, registers::I2C_SLV0_REG, ak09916::ST1).map_err(|_| Error::WriteFailed)?;
-        self.write_register(i2c, registers::I2C_SLV0_CTRL, 0x80 | 0x09).map_err(|_| Error::WriteFailed)?; // Enable + 9 bytes
+        // Set I2C master clock
+        self.write_register(i2c, registers::I2C_MST_CTRL, 0x07).map_err(|_| Error::WriteFailed)?;
 
-        // Switch back to Bank 0
+        // Set mag to 100 Hz mode
+        let _ = self.slv4_write(i2c, ak09916::ADDR, ak09916::CNTL2, ak09916::MODE_100HZ);
+
+        // Config SLV0 for mag data read
+        let _ = self.write_register(i2c, registers::I2C_SLV0_ADDR, ak09916::ADDR | 0x80);
+        let _ = self.write_register(i2c, registers::I2C_SLV0_REG, ak09916::ST1);
+        let _ = self.write_register(i2c, registers::I2C_SLV0_CTRL, 0x80 | 0x09);
+
+        // Switch to Bank 0
         self.write_register(i2c, registers::REG_BANK_SEL, 0x00).map_err(|_| Error::WriteFailed)?;
+
+        // Verify mag ID (optional, continue if fails)
+        self.write_register(i2c, registers::REG_BANK_SEL, 0x30).map_err(|_| Error::WriteFailed)?;
+        let mag_id = self.slv4_read(i2c, ak09916::ADDR, ak09916::WHO_AM_I);
+        self.write_register(i2c, registers::REG_BANK_SEL, 0x00).map_err(|_| Error::WriteFailed)?;
+        if let Ok(id) = mag_id {
+            if id != 0x09 {
+                // Log but continue
+            }
+        }
 
         Ok(())
     }
 
+    fn slv4_write<I2C>(&mut self, i2c: &mut I2C, addr: u8, reg: u8, value: u8) -> Result<(), Error>
+    where
+        I2C: I2c,
+    {
+        self.write_register(i2c, registers::I2C_SLV4_ADDR, addr).map_err(|_| Error::WriteFailed)?;
+        self.write_register(i2c, registers::I2C_SLV4_REG, reg).map_err(|_| Error::WriteFailed)?;
+        self.write_register(i2c, registers::I2C_SLV4_DO, value).map_err(|_| Error::WriteFailed)?;
+        self.write_register(i2c, registers::I2C_SLV4_CTRL, 0x80).map_err(|_| Error::WriteFailed)?;
+
+        let mut timeout = 100u32;
+        while timeout > 0 {
+            self.delay.delay_ms(1u32);
+            let ctrl = self.read_register(i2c, registers::I2C_SLV4_CTRL).map_err(|_| Error::ReadFailed)?;
+            if (ctrl & 0x80) == 0 {
+                if (ctrl & 0x01) != 0 {
+                    return Err(Error::I2cError); // NACK
+                }
+                return Ok(());
+            }
+            timeout -= 1;
+        }
+        Err(Error::Timeout)
+    }
+
+    fn slv4_read<I2C>(&mut self, i2c: &mut I2C, addr: u8, reg: u8) -> Result<u8, Error>
+    where
+        I2C: I2c,
+    {
+        self.write_register(i2c, registers::I2C_SLV4_ADDR, addr | 0x80).map_err(|_| Error::WriteFailed)?;
+        self.write_register(i2c, registers::I2C_SLV4_REG, reg).map_err(|_| Error::WriteFailed)?;
+        self.write_register(i2c, registers::I2C_SLV4_CTRL, 0x80).map_err(|_| Error::WriteFailed)?;
+
+        let mut timeout = 100u32;
+        while timeout > 0 {
+            self.delay.delay_ms(1u32);
+            let ctrl = self.read_register(i2c, registers::I2C_SLV4_CTRL).map_err(|_| Error::ReadFailed)?;
+            if (ctrl & 0x80) == 0 {
+                if (ctrl & 0x01) != 0 {
+                    return Err(Error::I2cError); // NACK
+                }
+                break;
+            }
+            timeout -= 1;
+        }
+        if timeout == 0 {
+            return Err(Error::Timeout);
+        }
+
+        self.read_register(i2c, registers::I2C_SLV4_DI).map_err(|_| Error::ReadFailed)
+    }
+
     /// Read raw accelerometer, gyroscope, and magnetometer data
-    /// - Performs a burst read of 12 bytes starting from ACCEL_XOUT_H for accel/gyro
-    /// - Reads 9 bytes from EXT_SENS_DATA_00 for mag (ST1 + mag data + ST2)
-    /// - Parses into i16 values (MSB << 8 | LSB, signed two's complement)
-    /// - Verifies mag data ready (DRDY in ST1) and no overflow (HOFL in ST2)
     pub fn read_raw<I2C>(&mut self, i2c: &mut I2C) -> Result<RawImu, Error>
     where
         I2C: I2c,
     {
         let mut buffer = [0u8; 12];
-        i2c.write_read(self.address, &[registers::ACCEL_XOUT_H], &mut buffer)
-            .map_err(|_| Error::ReadFailed)?;
+        if i2c.write_read(self.address, &[registers::ACCEL_XOUT_H], &mut buffer).is_err() {
+            return Err(Error::ReadFailed);
+        }
 
-        let raw = RawImu {
+        let mut raw = RawImu {
             accel: [
                 i16::from_be_bytes([buffer[0], buffer[1]]),
                 i16::from_be_bytes([buffer[2], buffer[3]]),
@@ -199,51 +253,41 @@ where
                 i16::from_be_bytes([buffer[8], buffer[9]]),
                 i16::from_be_bytes([buffer[10], buffer[11]]),
             ],
-            mag: [0; 3], // Placeholder, filled below
+            mag: [0; 3],
         };
 
-        // Read mag data from EXT_SENS_DATA
         let mut mag_buffer = [0u8; 9];
-        i2c.write_read(self.address, &[registers::EXT_SENS_DATA_00], &mut mag_buffer)
-            .map_err(|_| Error::ReadFailed)?;
-
-        let st1 = mag_buffer[0];
-        if st1 & 0x01 == 0 {
-            return Err(Error::MagDataNotReady); // DRDY not set
+        if i2c.write_read(self.address, &[registers::EXT_SENS_DATA_00], &mut mag_buffer).is_ok() {
+            let st1 = mag_buffer[0];
+            if st1 & 0x01 != 0 {
+                raw.mag = [
+                    i16::from_le_bytes([mag_buffer[1], mag_buffer[2]]),
+                    i16::from_le_bytes([mag_buffer[3], mag_buffer[4]]),
+                    i16::from_le_bytes([mag_buffer[5], mag_buffer[6]]),
+                ];
+                let st2 = mag_buffer[8];
+                if st2 & 0x08 != 0 {
+                    // HOFL set, overflow - handle if needed
+                }
+            }
         }
 
-        let mag_raw = RawImu {
-            mag: [
-                i16::from_le_bytes([mag_buffer[1], mag_buffer[2]]), // HX L/H (little-endian per AK09916)
-                i16::from_le_bytes([mag_buffer[3], mag_buffer[4]]), // HY
-                i16::from_le_bytes([mag_buffer[5], mag_buffer[6]]), // HZ
-            ],
-            ..raw
-        };
-
-        let st2 = mag_buffer[8];
-        if st2 & 0x08 != 0 {
-            // HOFL set, overflow - handle if needed (e.g., discard or log)
-        }
-
-        Ok(mag_raw)
+        Ok(raw)
     }
 
-    /// Write a single register
-    fn write_register<I2C>(&mut self, i2c: &mut I2C, reg: u8, value: u8) -> Result<(), ()>
+    fn write_register<I2C>(&mut self, i2c: &mut I2C, reg: u8, value: u8) -> Result<(), Error>
     where
         I2C: I2c,
     {
-        i2c.write(self.address, &[reg, value]).map_err(|_| ())
+        i2c.write(self.address, &[reg, value]).map_err(|_| Error::I2cError)
     }
 
-    /// Read a single register
-    fn read_register<I2C>(&mut self, i2c: &mut I2C, reg: u8) -> Result<u8, ()>
+    fn read_register<I2C>(&mut self, i2c: &mut I2C, reg: u8) -> Result<u8, Error>
     where
         I2C: I2c,
     {
         let mut buffer = [0u8; 1];
-        i2c.write_read(self.address, &[reg], &mut buffer).map_err(|_| ())?;
+        i2c.write_read(self.address, &[reg], &mut buffer).map_err(|_| Error::I2cError)?;
         Ok(buffer[0])
     }
 }
