@@ -42,7 +42,7 @@ This document outlines the hardware configurations and pin assignments for the M
     - TX: GP4 (FC TX to CP2102 RX)
     - RX: GP5 (FC RX from CP2102 TX)
 
-**Note**: I2C devices are split across two buses: High-frequency sensors (IMU and magnetometer) on I2C0 (GP22 SDA, GP21 SCL); lower-frequency sensors (barometer and RTC) on I2C1 (GP2 SDA, GP3 SCL).
+**Note**: I2C devices are split across two buses: High-frequency sensors (IMU and magnetometer) on I2C0 (GP20 SDA, GP21 SCL); lower-frequency sensors (barometer and RTC) on I2C1 (GP2 SDA, GP3 SCL).
 
 ## Radio
 

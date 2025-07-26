@@ -22,7 +22,7 @@ lmx154-marv/
 
 - **Microcontrollers**: Three Raspberry Pi Pico 2 boards (RP2350A) for FC, Radio, and GS. 🖥️
 - **Flight Controller (FC)**: 🛩️
-  - Sensors: BMP388 barometer and PCF8563 RTC (I2C1 on GP2 SDA, GP3 SCL); BMI088 IMU (SPI0 on GP18 CLK, GP19 MOSI, GP16 MISO, GP20 CS GYRO, GP17 CS ACCEL); BMM350 magnetometer and ICM-20948 IMU (I2C0 on GP22 SDA, GP21 SCL); Ublox NEO-M9N GPS (UART0 on GP0 TX, GP1 RX).
+  - Sensors: BMP388 barometer and PCF8563 RTC (I2C1 on GP2 SDA, GP3 SCL); BMI088 IMU (SPI0 on GP18 CLK, GP19 MOSI, GP16 MISO, GP20 CS GYRO, GP17 CS ACCEL); BMM350 magnetometer and ICM-20948 IMU (I2C0 on GP20 SDA, GP21 SCL); Ublox NEO-M9N GPS (UART0 on GP0 TX, GP1 RX).
   - CAN: MCP2515 (SPI1 on GP10 CLK, GP11 MOSI, GP12 MISO, GP13 CS) for communication with Radio.
   - SD Card: SPI on GP6 CLK, GP7 MOSI, GP8 MISO, GP9 CS.
   - LED: GPIO25.
