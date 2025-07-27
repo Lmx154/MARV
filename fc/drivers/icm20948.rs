@@ -1,9 +1,5 @@
 //! ICM-20948 IMU Driver
 //!
-//! Simple driver for the TDK InvenSense ICM-20948 9-axis IMU (accelerometer and gyroscope only).
-//! This driver focuses on reading raw accelerometer and gyroscope data over I2C.
-//! It does not handle the internal magnetometer (AK09916); use a separate driver for external magnetometers like BMM350.
-//!
 //! The driver provides raw data as i16 values per axis, suitable for further processing in filters (e.g., low-pass or Kalman).
 //! Scaling to physical units (g for accel, dps for gyro) can be done externally if needed.
 //!
@@ -18,6 +14,7 @@
 //! - In main code, read raw data and format as text for UART output (e.g., "Accel: x y z Gyro: x y z").
 //! - Delays in init use the provided Delay trait implementation.
 //! - Burst read for efficiency: Read 12 bytes from ACCEL_XOUT_H (0x2D) to GYRO_ZOUT_L (0x38).
+//! - This driver uses I2C bypass mode to enable direct access to the onboard AK09916 magnetometer.
 //!
 //! Error Handling: Basic I2C errors and chip ID verification.
 
