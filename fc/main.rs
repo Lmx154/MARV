@@ -9,6 +9,7 @@ use panic_halt as _;
 use hal::fugit::RateExtU32;
 use hal::gpio::{FunctionI2C, PullUp};
 use embedded_hal::delay::DelayNs;
+use embedded_hal::i2c::I2c;
 
 // Import the ICM20948 driver
 mod drivers;
@@ -16,7 +17,6 @@ use drivers::icm20948::{Icm20948, ICM20948_ADDR_AD0_HIGH};
 use drivers::bus_managers::I2cBusManager;
 mod tools;
 
-// Boot ROM image definition (required for RP2350 boot process)
 #[link_section = ".start_block"]
 #[used]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
@@ -118,6 +118,18 @@ fn main() -> ! {
             // Continue despite failure to allow partial operation
         }
     }
+
+    // Diagnostic: Read mag WHO_AM_I directly
+    let mut mag_id_buf = [0u8; 1];
+    let mag_id_result = bus.write_read(drivers::icm20948::ak09916::ADDR, &[drivers::icm20948::ak09916::WHO_AM_I], &mut mag_id_buf);
+    match mag_id_result {
+        Ok(()) => {
+            let _ = writeln!(uart, "Mag WHO_AM_I: 0x{:02X}\r\n", mag_id_buf[0]);
+        }
+        Err(_) => {
+            let _ = writeln!(uart, "Mag WHO_AM_I read failed\r\n");
+        }
+    }
     i2c0_manager.release();
 
     // Verify key registers post-init
@@ -136,7 +148,8 @@ fn main() -> ! {
 
     icm.delay.delay_ms(200u32); // Delay after init
 
-    // Main loop: Read and send IMU data
+    // Main loop: Read and send IMU data, scan I2C0 every 5 seconds
+    let mut scan_counter: u32 = 0;
     loop {
         let mut bus = i2c0_manager.acquire().unwrap();
         // Check data ready status
@@ -164,5 +177,14 @@ fn main() -> ! {
 
         // Delay for 1 second
         icm.delay.delay_ms(1000u32);
+
+        // Increment counter and scan every 5 iterations
+        scan_counter += 1;
+        if scan_counter >= 5 {
+            let mut bus = i2c0_manager.acquire().unwrap();
+            tools::i2cscanner::scan_i2c_bus(&mut bus, &mut uart, "I2C0 (periodic)");
+            i2c0_manager.release();
+            scan_counter = 0;
+        }
     }
 }

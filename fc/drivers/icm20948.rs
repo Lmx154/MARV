@@ -38,6 +38,7 @@ pub mod registers {
     pub const USER_CTRL: u8 = 0x03;          // For FIFO/DMP control if needed
     pub const PWR_MGMT_1: u8 = 0x06;
     pub const PWR_MGMT_2: u8 = 0x07; 
+    pub const INT_PIN_CFG: u8 = 0x0F;        // For bypass mode
     pub const REG_BANK_SEL: u8 = 0x7F;       // Bank select register
 
     // Bank 2 registers
@@ -48,30 +49,17 @@ pub mod registers {
     pub const ACCEL_XOUT_H: u8 = 0x2D;
     // Sequential: ACCEL_XOUT_L=0x2E, Y_H=0x2F, Y_L=0x30, Z_H=0x31, Z_L=0x32
     // GYRO_XOUT_H=0x33, ... Z_L=0x38
-
-    // Magnetometer-related registers
-    pub const I2C_MST_CTRL: u8 = 0x01;       // Bank 3
-    pub const I2C_MST_DELAY_CTRL: u8 = 0x02; // Bank 3
-    pub const I2C_SLV0_ADDR: u8 = 0x03;      // Bank 3
-    pub const I2C_SLV0_REG: u8 = 0x04;       // Bank 3
-    pub const I2C_SLV0_CTRL: u8 = 0x05;      // Bank 3
-    pub const I2C_SLV0_DO: u8 = 0x06;        // Bank 3
-    pub const I2C_SLV4_ADDR: u8 = 0x13;      // Bank 3
-    pub const I2C_SLV4_REG: u8 = 0x14;       // Bank 3
-    pub const I2C_SLV4_DO: u8 = 0x15;        // Bank 3
-    pub const I2C_SLV4_CTRL: u8 = 0x16;      // Bank 3
-    pub const I2C_SLV4_DI: u8 = 0x17;        // Bank 3
-    pub const EXT_SENS_DATA_00: u8 = 0x3B;   // Bank 0, for mag data
 }
 
 /// AK09916 magnetometer constants
-mod ak09916 {
+pub mod ak09916 {
     pub const ADDR: u8 = 0x0C;
     pub const WHO_AM_I: u8 = 0x01;           // Expected: 0x09
     pub const ST1: u8 = 0x10;
     pub const HXL: u8 = 0x11;                // Mag data start
     pub const ST2: u8 = 0x18;                // End after HZ H
     pub const CNTL2: u8 = 0x31;              // Mode control
+    pub const CNTL3: u8 = 0x32;              // Soft reset
     pub const MODE_100HZ: u8 = 0x08;         // Continuous 100 Hz
 }
 
@@ -127,11 +115,11 @@ where
 
         // Wake from sleep and set clock to auto-select
         self.write_register(i2c, registers::PWR_MGMT_1, 0x01).map_err(|_| Error::WriteFailed)?;
-        self.delay.delay_ms(10u32);
+        self.delay.delay_ms(200u32);
 
         // Enable accel and gyro (all axes)
         self.write_register(i2c, registers::PWR_MGMT_2, 0x00).map_err(|_| Error::WriteFailed)?;
-        self.delay.delay_ms(10u32);
+        self.delay.delay_ms(200u32);
 
         // Switch to Bank 2 for config
         self.write_register(i2c, registers::REG_BANK_SEL, 0x20).map_err(|_| Error::WriteFailed)?;
@@ -149,107 +137,52 @@ where
         self.write_register(i2c, registers::REG_BANK_SEL, 0x00).map_err(|_| Error::WriteFailed)?;
         self.delay.delay_ms(10u32);
 
-        // Enable I2C master
-        self.write_register(i2c, registers::USER_CTRL, 0x20).map_err(|_| Error::WriteFailed)?;
+        // Disable I2C master
+        self.write_register(i2c, registers::USER_CTRL, 0x00).map_err(|_| Error::WriteFailed)?;
         self.delay.delay_ms(10u32);
 
-        // Reset I2C master
-        self.write_register(i2c, registers::USER_CTRL, 0x20 | 0x80).map_err(|_| Error::WriteFailed)?;
-        self.delay.delay_ms(10u32);
-        self.write_register(i2c, registers::USER_CTRL, 0x20).map_err(|_| Error::WriteFailed)?;
-        self.delay.delay_ms(10u32);
+        // Enable I2C bypass
+        self.write_register(i2c, registers::INT_PIN_CFG, 0x02).map_err(|_| Error::WriteFailed)?;
+        self.delay.delay_ms(100u32);
 
-        // Switch to Bank 3
-        self.write_register(i2c, registers::REG_BANK_SEL, 0x30).map_err(|_| Error::WriteFailed)?;
-        self.delay.delay_ms(10u32);
-
-        // Set I2C master clock
-        self.write_register(i2c, registers::I2C_MST_CTRL, 0x07).map_err(|_| Error::WriteFailed)?;
-        self.delay.delay_ms(10u32);
-
-        // Enable delay control for magnetometer
-        self.write_register(i2c, registers::I2C_MST_DELAY_CTRL, 0x81).map_err(|_| Error::WriteFailed)?;
-        self.delay.delay_ms(10u32);
-
-        // Set mag to 100 Hz mode
-        self.slv4_write(i2c, ak09916::ADDR, ak09916::CNTL2, ak09916::MODE_100HZ)?;
-
-        // Verify mag mode - if fails, continue but log (comment return Err to test)
-        let mag_mode = self.slv4_read(i2c, ak09916::ADDR, ak09916::CNTL2)?;
-        if mag_mode != ak09916::MODE_100HZ {
-            // return Err(Error::MagInitFailed);
+        // Verify bypass enabled (diagnostic)
+        let int_pin_cfg = self.read_register(i2c, registers::INT_PIN_CFG).map_err(|_| Error::ReadFailed)?;
+        if int_pin_cfg & 0x02 != 0x02 {
+            // Log but continue
         }
 
-        // Config SLV0 for mag data read
-        self.write_register(i2c, registers::I2C_SLV0_ADDR, ak09916::ADDR | 0x80)?;
-        self.write_register(i2c, registers::I2C_SLV0_REG, ak09916::ST1)?;
-        self.write_register(i2c, registers::I2C_SLV0_CTRL, 0x80 | 0x09)?;
+        // Initialize magnetometer directly
+        // Soft reset
+        if i2c.write(ak09916::ADDR, &[ak09916::CNTL3, 0x01]).is_err() {
+            return Err(Error::MagInitFailed);
+        }
+        self.delay.delay_ms(200u32);
 
-        // Switch to Bank 0
-        self.write_register(i2c, registers::REG_BANK_SEL, 0x00).map_err(|_| Error::WriteFailed)?;
+        // Set mode to 100 Hz
+        if i2c.write(ak09916::ADDR, &[ak09916::CNTL2, ak09916::MODE_100HZ]).is_err() {
+            return Err(Error::MagInitFailed);
+        }
+        self.delay.delay_ms(200u32);
 
-        // Verify mag ID (optional, continue if fails)
-        self.write_register(i2c, registers::REG_BANK_SEL, 0x30).map_err(|_| Error::WriteFailed)?;
-        let mag_id = self.slv4_read(i2c, ak09916::ADDR, ak09916::WHO_AM_I);
-        self.write_register(i2c, registers::REG_BANK_SEL, 0x00).map_err(|_| Error::WriteFailed)?;
-        if let Ok(id) = mag_id {
-            if id != 0x09 {
-                // Log but continue
-            }
+        // Verify mode
+        let mut mode_buf = [0u8; 1];
+        if i2c.write_read(ak09916::ADDR, &[ak09916::CNTL2], &mut mode_buf).is_err() {
+            return Err(Error::MagInitFailed);
+        }
+        if mode_buf[0] != ak09916::MODE_100HZ {
+            return Err(Error::MagInitFailed);
+        }
+
+        // Verify mag ID
+        let mut id_buf = [0u8; 1];
+        if i2c.write_read(ak09916::ADDR, &[ak09916::WHO_AM_I], &mut id_buf).is_err() {
+            return Err(Error::MagInitFailed);
+        }
+        if id_buf[0] != 0x09 {
+            return Err(Error::MagInitFailed);
         }
 
         Ok(())
-    }
-
-    fn slv4_write<I2C>(&mut self, i2c: &mut I2C, addr: u8, reg: u8, value: u8) -> Result<(), Error>
-    where
-        I2C: I2c,
-    {
-        self.write_register(i2c, registers::I2C_SLV4_ADDR, addr).map_err(|_| Error::WriteFailed)?;
-        self.write_register(i2c, registers::I2C_SLV4_REG, reg).map_err(|_| Error::WriteFailed)?;
-        self.write_register(i2c, registers::I2C_SLV4_DO, value).map_err(|_| Error::WriteFailed)?;
-        self.write_register(i2c, registers::I2C_SLV4_CTRL, 0x80).map_err(|_| Error::WriteFailed)?;
-
-        let mut timeout = 100u32;
-        while timeout > 0 {
-            self.delay.delay_ms(1u32);
-            let ctrl = self.read_register(i2c, registers::I2C_SLV4_CTRL).map_err(|_| Error::ReadFailed)?;
-            if (ctrl & 0x80) == 0 {
-                if (ctrl & 0x01) != 0 {
-                    return Err(Error::I2cError); // NACK
-                }
-                return Ok(());
-            }
-            timeout -= 1;
-        }
-        Err(Error::Timeout)
-    }
-
-    fn slv4_read<I2C>(&mut self, i2c: &mut I2C, addr: u8, reg: u8) -> Result<u8, Error>
-    where
-        I2C: I2c,
-    {
-        self.write_register(i2c, registers::I2C_SLV4_ADDR, addr | 0x80).map_err(|_| Error::WriteFailed)?;
-        self.write_register(i2c, registers::I2C_SLV4_REG, reg).map_err(|_| Error::WriteFailed)?;
-        self.write_register(i2c, registers::I2C_SLV4_CTRL, 0x80).map_err(|_| Error::WriteFailed)?;
-
-        let mut timeout = 100u32;
-        while timeout > 0 {
-            self.delay.delay_ms(1u32);
-            let ctrl = self.read_register(i2c, registers::I2C_SLV4_CTRL).map_err(|_| Error::ReadFailed)?;
-            if (ctrl & 0x80) == 0 {
-                if (ctrl & 0x01) != 0 {
-                    return Err(Error::I2cError); // NACK
-                }
-                break;
-            }
-            timeout -= 1;
-        }
-        if timeout == 0 {
-            return Err(Error::Timeout);
-        }
-
-        self.read_register(i2c, registers::I2C_SLV4_DI).map_err(|_| Error::ReadFailed)
     }
 
     /// Read raw accelerometer, gyroscope, and magnetometer data
@@ -277,19 +210,24 @@ where
         };
 
         let mut mag_buffer = [0u8; 9];
-        if i2c.write_read(self.address, &[registers::EXT_SENS_DATA_00], &mut mag_buffer).is_ok() {
-            let st1 = mag_buffer[0];
-            if st1 & 0x01 != 0 {
-                raw.mag = [
-                    i16::from_le_bytes([mag_buffer[1], mag_buffer[2]]),
-                    i16::from_le_bytes([mag_buffer[3], mag_buffer[4]]),
-                    i16::from_le_bytes([mag_buffer[5], mag_buffer[6]]),
-                ];
-                let st2 = mag_buffer[8];
-                if st2 & 0x08 != 0 {
-                    // HOFL set, overflow - handle if needed
-                }
-            } // No Err if not ready, just set to 0
+        if i2c.write_read(ak09916::ADDR, &[ak09916::ST1], &mut mag_buffer).is_err() {
+            return Ok(raw); // Proceed with zero mag on error
+        }
+
+        let st1 = mag_buffer[0];
+        if st1 & 0x01 != 0 {
+            raw.mag = [
+                i16::from_le_bytes([mag_buffer[1], mag_buffer[2]]),
+                i16::from_le_bytes([mag_buffer[3], mag_buffer[4]]),
+                i16::from_le_bytes([mag_buffer[5], mag_buffer[6]]),
+            ];
+            let st2 = mag_buffer[8];
+            if st2 & 0x08 != 0 {
+                // Overflow, set to zero or handle
+                raw.mag = [0; 3];
+            }
+        } else {
+            // Data not ready, zero
         }
 
         Ok(raw)
