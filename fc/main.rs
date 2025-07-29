@@ -1,3 +1,4 @@
+
 #![no_std]
 #![no_main]
 
@@ -9,11 +10,9 @@ use panic_halt as _;
 use hal::fugit::RateExtU32;
 use hal::gpio::{FunctionI2C, PullUp};
 use embedded_hal::delay::DelayNs;
-use embedded_hal::i2c::I2c;
 
-// Import the ICM20948 driver
 mod drivers;
-use drivers::icm20948::{Icm20948, ICM20948_ADDR_AD0_HIGH};
+use drivers::bmm350::Bmm350;
 use drivers::bus_managers::I2cBusManager;
 mod tools;
 
@@ -100,87 +99,49 @@ fn main() -> ! {
     );
 
     // Scan I2C buses to confirm devices
-    tools::i2cscanner::scan_i2c_bus(&mut i2c0_manager.acquire().unwrap(), &mut uart, "I2C0");
+    let mut bus = i2c0_manager.acquire().unwrap();
+    tools::i2cscanner::scan_i2c_bus(&mut bus, &mut uart, "I2C0");
     i2c0_manager.release();
     tools::i2cscanner::scan_i2c_bus(&mut i2c1, &mut uart, "I2C1");
 
-    // Initialize ICM20948 with timer as delay provider
-    let mut icm = Icm20948::new(timer, ICM20948_ADDR_AD0_HIGH);
-
-    // Initialize the IMU using bus manager
+    // Initialize BMM350
+    let mut bmm = Bmm350::new(0x14);
     let mut bus = i2c0_manager.acquire().unwrap();
-    match icm.init(&mut bus) {
+    match bmm.init(&mut bus, &mut timer, &mut uart) {
         Ok(()) => {
-            let _ = writeln!(uart, "ICM20948 IMU initialized\r\n");
+            let _ = writeln!(uart, "BMM350 initialized successfully\r\n");
         }
         Err(e) => {
-            let _ = writeln!(uart, "ICM20948 IMU init failed: {:?}\r\n", e);
-            // Continue despite failure to allow partial operation
-        }
-    }
-
-    // Diagnostic: Read mag WHO_AM_I directly
-    let mut mag_id_buf = [0u8; 1];
-    let mag_id_result = bus.write_read(drivers::icm20948::ak09916::ADDR, &[drivers::icm20948::ak09916::WHO_AM_I], &mut mag_id_buf);
-    match mag_id_result {
-        Ok(()) => {
-            let _ = writeln!(uart, "Mag WHO_AM_I: 0x{:02X}\r\n", mag_id_buf[0]);
-        }
-        Err(_) => {
-            let _ = writeln!(uart, "Mag WHO_AM_I read failed\r\n");
+            let _ = writeln!(uart, "BMM350 init failed: {:?}", e);
+            loop {} // Halt for debugging
         }
     }
     i2c0_manager.release();
 
-    // Verify key registers post-init
-    let mut bus = i2c0_manager.acquire().unwrap();
-    let pwr_mgmt_1 = icm.read_register(&mut bus, drivers::icm20948::registers::PWR_MGMT_1).unwrap_or(0xFF);
-    let _ = writeln!(uart, "PWR_MGMT_1 read-back: 0x{:02X}\r\n", pwr_mgmt_1);  // Should be 0x01
-    // Switch to Bank 2 to check configs
-    let _ = icm.write_register(&mut bus, drivers::icm20948::registers::REG_BANK_SEL, 0x20);
-    let gyro_config_1 = icm.read_register(&mut bus, drivers::icm20948::registers::GYRO_CONFIG_1).unwrap_or(0xFF);
-    let _ = writeln!(uart, "GYRO_CONFIG_1 read-back: 0x{:02X}\r\n", gyro_config_1);  // Should be 0x00
-    let accel_config = icm.read_register(&mut bus, drivers::icm20948::registers::ACCEL_CONFIG).unwrap_or(0xFF);
-    let _ = writeln!(uart, "ACCEL_CONFIG read-back: 0x{:02X}\r\n", accel_config);  // Should be 0x00
-    // Back to Bank 0
-    let _ = icm.write_register(&mut bus, drivers::icm20948::registers::REG_BANK_SEL, 0x00);
-    i2c0_manager.release();
-
-    icm.delay.delay_ms(200u32); // Delay after init
-
-    // Main loop: Read and send IMU data, scan I2C0 every 5 seconds
+    // Main loop: Read and send sensor data at ~100 Hz
     let mut scan_counter: u32 = 0;
     loop {
         let mut bus = i2c0_manager.acquire().unwrap();
-        // Check data ready status
-        let int_status = icm.read_register(&mut bus, 0x1A).unwrap_or(0x00);  // INT_STATUS (Bank 0, 0x1A), bit 0 = RAW_DATA_RDY
-        let _ = writeln!(uart, "Data ready status: 0x{:02X}\r\n", int_status);
-        if int_status & 0x01 == 0 {
-            let _ = writeln!(uart, "Warning: No new data ready\r\n");
-        }
-
-        match icm.read_raw(&mut bus) {
+        match bmm.read_raw(&mut bus, &mut uart) {
             Ok(raw) => {
                 let _ = writeln!(
                     uart,
-                    "IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {}\r\n",
-                    raw.accel[0], raw.accel[1], raw.accel[2],
-                    raw.gyro[0], raw.gyro[1], raw.gyro[2],
-                    raw.mag[0], raw.mag[1], raw.mag[2]
+                    "MAG1: {}, {}, {}\r\n",
+                    raw.x, raw.y, raw.z
                 );
             }
             Err(e) => {
-                let _ = writeln!(uart, "Failed to read IMU: {:?}\r\n", e);
+                let _ = writeln!(uart, "Failed to read BMM350: {:?}", e);
             }
         }
         i2c0_manager.release();
 
-        // Delay for 1 second
-        icm.delay.delay_ms(1000u32);
+        // Delay for ~100 Hz (10ms)
+        timer.delay_ms(10u32);
 
-        // Increment counter and scan every 5 iterations
+        // Periodic I2C scan every 5 seconds
         scan_counter += 1;
-        if scan_counter >= 5 {
+        if scan_counter >= 500 { // 500 * 10ms = 5s
             let mut bus = i2c0_manager.acquire().unwrap();
             tools::i2cscanner::scan_i2c_bus(&mut bus, &mut uart, "I2C0 (periodic)");
             i2c0_manager.release();
