@@ -1,6 +1,8 @@
+// fc/drivers/bmm350.rs (No changes needed beyond previous; this is the full file for completeness)
 
 use embedded_hal::delay::DelayNs;
 use embedded_hal::i2c::I2c;
+use core::fmt::Write;
 
 /// Key registers from datasheet Section 8.
 const REG_CHIP_ID: u8 = 0x00;
@@ -56,19 +58,20 @@ impl Bmm350 {
 
     /// Initialize the sensor following datasheet and API sequence.
     pub fn init<I2C, E, D, W>(
-        &self,
+        &mut self,
         i2c: &mut I2C,
         delay: &mut D,
         uart: &mut W,
     ) -> Result<(), Bmm350Error<E>>
     where
         I2C: I2c<Error = E>,
+        E: core::fmt::Debug,
         D: DelayNs,
-        W: core::fmt::Write,
+        W: Write,
     {
         // Step 1: Power-on delay.
         delay.delay_ms(200u32);
-        writeln!(uart, "BMM350 power-on delay completed").ok();
+        let _ = writeln!(uart, "BMM350 power-on delay completed");
 
         // Step 2: Verify CHIP_ID with retries at both addresses.
         let mut chip_id = [0u8];
@@ -79,15 +82,15 @@ impl Bmm350 {
             while retry > 0 {
                 match self.read_reg_at(i2c, addr, REG_CHIP_ID, &mut chip_id) {
                     Ok(()) if chip_id[0] == CHIP_ID_EXPECTED => {
-                        writeln!(uart, "BMM350 CHIP_ID verified at 0x{:02X}: 0x{:02X}", addr, chip_id[0]).ok();
+                        let _ = writeln!(uart, "BMM350 CHIP_ID verified at 0x{:02X}: 0x{:02X}", addr, chip_id[0]);
                         success = true;
                         break;
                     }
                     Ok(()) => {
-                        writeln!(uart, "BMM350 CHIP_ID read at 0x{:02X} failed: got 0x{:02X}, retrying ({}/5)", addr, chip_id[0], 6 - retry).ok();
+                        let _ = writeln!(uart, "BMM350 CHIP_ID read at 0x{:02X} failed: got 0x{:02X}, retrying ({}/5)", addr, chip_id[0], 6 - retry);
                     }
                     Err(e) => {
-                        writeln!(uart, "BMM350 CHIP_ID read at 0x{:02X} failed with I2C error: {:?}", addr, e).ok();
+                        let _ = writeln!(uart, "BMM350 CHIP_ID read at 0x{:02X} failed with I2C error: {:?}", addr, e);
                     }
                 }
                 retry -= 1;
@@ -101,12 +104,12 @@ impl Bmm350 {
                 delay.delay_ms(100u32);
             }
             if success {
-                self.addr = addr; // Update address if successful.
+                self.addr = addr; 
                 break;
             }
         }
         if !success {
-            writeln!(uart, "BMM350 CHIP_ID failed after retries").ok();
+            let _ = writeln!(uart, "BMM350 CHIP_ID failed after retries");
             return Err(Bmm350Error::InvalidChipId(chip_id[0]));
         }
 
@@ -118,10 +121,10 @@ impl Bmm350 {
         let mut status = [0u8];
         self.read_reg(i2c, REG_ERR_REG, &mut status)?;
         if status[0] != 0 {
-            writeln!(uart, "BMM350 ERR_REG after reset: 0x{:02X}", status[0]).ok();
+            let _ = writeln!(uart, "BMM350 ERR_REG after reset: 0x{:02X}", status[0]);
             return Err(Bmm350Error::PmuError(status[0]));
         }
-        writeln!(uart, "BMM350 soft reset completed").ok();
+        let _ = writeln!(uart, "BMM350 soft reset completed");
 
         // Step 4: Load OTP (32 words; discard for raw data).
         let mut _otp_data: [u16; 32] = [0; 32];
@@ -136,7 +139,7 @@ impl Bmm350 {
                 }
                 timeout -= 1;
                 if timeout == 0 {
-                    writeln!(uart, "BMM350 OTP busy timeout at word {}", word).ok();
+                    let _ = writeln!(uart, "BMM350 OTP busy timeout at word {}", word);
                     return Err(Bmm350Error::OtpBusy);
                 }
                 delay.delay_ms(10u32);
@@ -147,13 +150,13 @@ impl Bmm350 {
             self.read_reg(i2c, REG_OTP_DATA_MSB_REG, &mut msb)?;
             _otp_data[word as usize] = ((msb[0] as u16) << 8) | lsb[0] as u16;
         }
-        writeln!(uart, "BMM350 OTP loaded").ok();
+        let _ = writeln!(uart, "BMM350 OTP loaded");
 
         // Step 5: Configure settings.
         self.write_reg(i2c, REG_PAD_CTRL, 0x07)?;
         self.read_reg(i2c, REG_PAD_CTRL, &mut status)?;
         if status[0] != 0x07 {
-            writeln!(uart, "BMM350 PAD_CTRL mismatch: expected 0x07, got 0x{:02X}", status[0]).ok();
+            let _ = writeln!(uart, "BMM350 PAD_CTRL mismatch: expected 0x07, got 0x{:02X}", status[0]);
             return Err(Bmm350Error::ConfigMismatch {
                 reg: REG_PAD_CTRL,
                 expected: 0x07,
@@ -163,7 +166,7 @@ impl Bmm350 {
         self.write_reg(i2c, REG_I2C_WDT_SET, 0x01)?;
         self.read_reg(i2c, REG_I2C_WDT_SET, &mut status)?;
         if status[0] != 0x01 {
-            writeln!(uart, "BMM350 I2C_WDT_SET mismatch: expected 0x01, got 0x{:02X}", status[0]).ok();
+            let _ = writeln!(uart, "BMM350 I2C_WDT_SET mismatch: expected 0x01, got 0x{:02X}", status[0]);
             return Err(Bmm350Error::ConfigMismatch {
                 reg: REG_I2C_WDT_SET,
                 expected: 0x01,
@@ -175,7 +178,7 @@ impl Bmm350 {
         self.write_reg(i2c, REG_PMU_CMD_AGGR_SET, 0x14)?;
         self.read_reg(i2c, REG_PMU_CMD_AGGR_SET, &mut status)?;
         if status[0] != 0x14 {
-            writeln!(uart, "BMM350 PMU_CMD_AGGR_SET mismatch: expected 0x14, got 0x{:02X}", status[0]).ok();
+            let _ = writeln!(uart, "BMM350 PMU_CMD_AGGR_SET mismatch: expected 0x14, got 0x{:02X}", status[0]);
             return Err(Bmm350Error::ConfigMismatch {
                 reg: REG_PMU_CMD_AGGR_SET,
                 expected: 0x14,
@@ -192,23 +195,23 @@ impl Bmm350 {
             }
             timeout -= 1;
             if timeout == 0 {
-                writeln!(uart, "BMM350 PMU busy timeout after ODR/avg update").ok();
+                let _ = writeln!(uart, "BMM350 PMU busy timeout after ODR/avg update");
                 return Err(Bmm350Error::PmuBusy);
             }
             delay.delay_ms(10u32);
         }
         self.read_reg(i2c, REG_ERR_REG, &mut status)?;
         if status[0] != 0 {
-            writeln!(uart, "BMM350 ERR_REG after ODR/avg: 0x{:02X}", status[0]).ok();
+            let _ = writeln!(uart, "BMM350 ERR_REG after ODR/avg: 0x{:02X}", status[0]);
             return Err(Bmm350Error::PmuError(status[0]));
         }
-        writeln!(uart, "BMM350 ODR/avg configured").ok();
+        let _ = writeln!(uart, "BMM350 ODR/avg configured");
 
         // Enable all axes.
         self.write_reg(i2c, REG_PMU_CMD_AXIS_EN, 0x07)?;
         self.read_reg(i2c, REG_PMU_CMD_AXIS_EN, &mut status)?;
         if status[0] != 0x07 {
-            writeln!(uart, "BMM350 PMU_CMD_AXIS_EN mismatch: expected 0x07, got 0x{:02X}", status[0]).ok();
+            let _ = writeln!(uart, "BMM350 PMU_CMD_AXIS_EN mismatch: expected 0x07, got 0x{:02X}", status[0]);
             return Err(Bmm350Error::ConfigMismatch {
                 reg: REG_PMU_CMD_AXIS_EN,
                 expected: 0x07,
@@ -217,10 +220,10 @@ impl Bmm350 {
         }
         self.read_reg(i2c, REG_ERR_REG, &mut status)?;
         if status[0] != 0 {
-            writeln!(uart, "BMM350 ERR_REG after axis enable: 0x{:02X}", status[0]).ok();
+            let _ = writeln!(uart, "BMM350 ERR_REG after axis enable: 0x{:02X}", status[0]);
             return Err(Bmm350Error::PmuError(status[0]));
         }
-        writeln!(uart, "BMM350 axes enabled").ok();
+        let _ = writeln!(uart, "BMM350 axes enabled");
 
         // Step 6: Set normal mode.
         self.write_reg(i2c, REG_PMU_CMD, 0x01)?;
@@ -233,29 +236,29 @@ impl Bmm350 {
             }
             timeout -= 1;
             if timeout == 0 {
-                writeln!(uart, "BMM350 PMU busy timeout entering normal mode").ok();
+                let _ = writeln!(uart, "BMM350 PMU busy timeout entering normal mode");
                 return Err(Bmm350Error::PmuBusy);
             }
             delay.delay_ms(10u32);
         }
         self.read_reg(i2c, REG_ERR_REG, &mut status)?;
         if status[0] != 0 {
-            writeln!(uart, "BMM350 ERR_REG after normal mode: 0x{:02X}", status[0]).ok();
+            let _ = writeln!(uart, "BMM350 ERR_REG after normal mode: 0x{:02X}", status[0]);
             return Err(Bmm350Error::PmuError(status[0]));
         }
-        writeln!(uart, "BMM350 entered normal mode").ok();
+        let _ = writeln!(uart, "BMM350 entered normal mode");
 
         // Verify data ready.
         timeout = 50u32;
         loop {
             self.read_reg(i2c, REG_INT_STATUS, &mut status)?;
             if status[0] & 0x04 != 0 {
-                writeln!(uart, "BMM350 data ready confirmed: INT_STATUS=0x{:02X}", status[0]).ok();
+                let _ = writeln!(uart, "BMM350 data ready confirmed: INT_STATUS=0x{:02X}", status[0]);
                 break;
             }
             timeout -= 1;
             if timeout == 0 {
-                writeln!(uart, "BMM350 data not ready: INT_STATUS=0x{:02X}", status[0]).ok();
+                let _ = writeln!(uart, "BMM350 data not ready: INT_STATUS=0x{:02X}", status[0]);
                 return Err(Bmm350Error::DataNotReady);
             }
             delay.delay_ms(10u32);
@@ -272,13 +275,14 @@ impl Bmm350 {
     ) -> Result<RawMag, Bmm350Error<E>>
     where
         I2C: I2c<Error = E>,
-        W: core::fmt::Write,
+        E: core::fmt::Debug,
+        W: Write,
     {
         // Check data ready (INT_STATUS bit 2).
         let mut status = [0u8];
         self.read_reg(i2c, REG_INT_STATUS, &mut status)?;
         if status[0] & 0x04 == 0 {
-            writeln!(uart, "BMM350 data not ready: INT_STATUS=0x{:02X}", status[0]).ok();
+            let _ = writeln!(uart, "BMM350 data not ready: INT_STATUS=0x{:02X}", status[0]);
             return Err(Bmm350Error::DataNotReady);
         }
 
@@ -286,7 +290,7 @@ impl Bmm350 {
         let mut time_buf = [0u8; 3];
         self.read_reg(i2c, REG_SENSORTIME_XLSB, &mut time_buf)?;
         let sensortime = u32::from_le_bytes([time_buf[0], time_buf[1], time_buf[2], 0]);
-        writeln!(uart, "BMM350 data ready: INT_STATUS=0x{:02X}, sensortime={}", status[0], sensortime).ok();
+        let _ = writeln!(uart, "BMM350 data ready: INT_STATUS=0x{:02X}, sensortime={}", status[0], sensortime);
 
         let mut buf = [0u8; 9];
         self.read_reg(i2c, REG_MAG_DATA_START, &mut buf)?;

@@ -1,3 +1,4 @@
+// fc/main.rs (Updated)
 
 #![no_std]
 #![no_main]
@@ -9,10 +10,12 @@ use core::fmt::Write;
 use panic_halt as _;
 use hal::fugit::RateExtU32;
 use hal::gpio::{FunctionI2C, PullUp};
+use embedded_hal::i2c::I2c;
 use embedded_hal::delay::DelayNs;
 
+// Import the BMM350 driver
 mod drivers;
-use drivers::bmm350::Bmm350;
+use drivers::bmm350::{Bmm350, RawMag};
 use drivers::bus_managers::I2cBusManager;
 mod tools;
 
@@ -64,19 +67,19 @@ fn main() -> ! {
     // Initialize timer for delays
     let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut resets, &clocks);
 
-    // Delay for stabilization after power-on
-    timer.delay_ms(200u32);
+    // Extended delay for stabilization after power-on
+    timer.delay_ms(500u32);
 
     // Configure I2C0 pins: GP20 (SDA), GP21 (SCL)
     let i2c0_sda = pins.gpio20.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
     let i2c0_scl = pins.gpio21.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
 
-    // Initialize I2C0 at 100 kHz
+    // Initialize I2C0 at reduced 50 kHz for stability
     let i2c0 = hal::i2c::I2C::i2c0(
         pac.I2C0,
         i2c0_sda,
         i2c0_scl,
-        100u32.kHz(),
+        50u32.kHz(),
         &mut resets,
         clocks.system_clock.freq(),
     );
@@ -84,7 +87,7 @@ fn main() -> ! {
     // Wrap in bus manager
     let mut i2c0_manager = I2cBusManager::<hal::pac::I2C0, hal::gpio::bank0::Gpio20, hal::gpio::bank0::Gpio21>::new(i2c0);
 
-    // Configure I2C1 pins: GP2 (SDA), GP3 (SCL)
+    // Configure I2C1 pins: GP2 (SDA), GP3 (SCL) - kept for completeness
     let i2c1_sda = pins.gpio2.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
     let i2c1_scl = pins.gpio3.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
 
@@ -98,30 +101,92 @@ fn main() -> ! {
         clocks.system_clock.freq(),
     );
 
-    // Scan I2C buses to confirm devices
-    let mut bus = i2c0_manager.acquire().unwrap();
-    tools::i2cscanner::scan_i2c_bus(&mut bus, &mut uart, "I2C0");
-    i2c0_manager.release();
-    tools::i2cscanner::scan_i2c_bus(&mut i2c1, &mut uart, "I2C1");
-
     // Initialize BMM350
-    let mut bmm = Bmm350::new(0x14);
+    let mut bmm = Bmm350::new(0x14u8);
+
+    // Initialize the sensor using bus manager
     let mut bus = i2c0_manager.acquire().unwrap();
     match bmm.init(&mut bus, &mut timer, &mut uart) {
         Ok(()) => {
-            let _ = writeln!(uart, "BMM350 initialized successfully\r\n");
+            let _ = writeln!(uart, "BMM350 initialized\r\n");
         }
         Err(e) => {
-            let _ = writeln!(uart, "BMM350 init failed: {:?}", e);
-            loop {} // Halt for debugging
+            let _ = writeln!(uart, "BMM350 init failed: {:?}\r\n", e);
+        }
+    }
+
+    // Detailed troubleshooting outputs: Read key registers post-init
+    let mut buf = [0u8; 1];
+    // CHIP_ID (should be 0x33)
+    let chip_id_result = bus.write_read(0x14u8, &[0x00u8], &mut buf);
+    match chip_id_result {
+        Ok(()) => {
+            let _ = writeln!(uart, "BMM350 CHIP_ID: 0x{:02X}\r\n", buf[0]);
+        }
+        Err(_) => {
+            let _ = writeln!(uart, "BMM350 CHIP_ID read failed\r\n");
+        }
+    }
+    // ERR_REG (should be 0x00)
+    let err_reg_result = bus.write_read(0x14u8, &[0x02u8], &mut buf);
+    match err_reg_result {
+        Ok(()) => {
+            let _ = writeln!(uart, "BMM350 ERR_REG: 0x{:02X}\r\n", buf[0]);
+        }
+        Err(_) => {
+            let _ = writeln!(uart, "BMM350 ERR_REG read failed\r\n");
+        }
+    }
+    // PMU_CMD_AGGR_SET (should be 0x14)
+    let aggr_set_result = bus.write_read(0x14u8, &[0x04u8], &mut buf);
+    match aggr_set_result {
+        Ok(()) => {
+            let _ = writeln!(uart, "BMM350 PMU_CMD_AGGR_SET: 0x{:02X}\r\n", buf[0]);
+        }
+        Err(_) => {
+            let _ = writeln!(uart, "BMM350 PMU_CMD_AGGR_SET read failed\r\n");
+        }
+    }
+    // PMU_CMD_AXIS_EN (should be 0x07)
+    let axis_en_result = bus.write_read(0x14u8, &[0x05u8], &mut buf);
+    match axis_en_result {
+        Ok(()) => {
+            let _ = writeln!(uart, "BMM350 PMU_CMD_AXIS_EN: 0x{:02X}\r\n", buf[0]);
+        }
+        Err(_) => {
+            let _ = writeln!(uart, "BMM350 PMU_CMD_AXIS_EN read failed\r\n");
+        }
+    }
+    // PMU_CMD_STATUS_0 (busy bit should be 0)
+    let status_0_result = bus.write_read(0x14u8, &[0x07u8], &mut buf);
+    match status_0_result {
+        Ok(()) => {
+            let _ = writeln!(uart, "BMM350 PMU_CMD_STATUS_0: 0x{:02X}\r\n", buf[0]);
+        }
+        Err(_) => {
+            let _ = writeln!(uart, "BMM350 PMU_CMD_STATUS_0 read failed\r\n");
         }
     }
     i2c0_manager.release();
 
-    // Main loop: Read and send sensor data at ~100 Hz
+    timer.delay_ns(200_000_000u32); // Delay after init (200ms)
+
+    // Main loop: Read and send sensor data at 1 Hz
     let mut scan_counter: u32 = 0;
     loop {
         let mut bus = i2c0_manager.acquire().unwrap();
+        // Check INT_STATUS for data ready (for debugging)
+        let mut status_buf = [0u8; 1];
+        let int_status_result = bus.write_read(0x14u8, &[0x30u8], &mut status_buf);
+        match int_status_result {
+            Ok(()) => {
+                let _ = writeln!(uart, "BMM350 INT_STATUS: 0x{:02X}\r\n", status_buf[0]);
+            }
+            Err(_) => {
+                let _ = writeln!(uart, "BMM350 INT_STATUS read failed\r\n");
+            }
+        }
+
         match bmm.read_raw(&mut bus, &mut uart) {
             Ok(raw) => {
                 let _ = writeln!(
@@ -131,20 +196,17 @@ fn main() -> ! {
                 );
             }
             Err(e) => {
-                let _ = writeln!(uart, "Failed to read BMM350: {:?}", e);
+                let _ = writeln!(uart, "Failed to read BMM350: {:?}\r\n", e);
             }
         }
         i2c0_manager.release();
 
-        // Delay for ~100 Hz (10ms)
-        timer.delay_ms(10u32);
+        // Delay for 1 second (1 Hz reporting)
+        timer.delay_ms(1000u32);
 
-        // Periodic I2C scan every 5 seconds
+        // Increment counter (scan disabled)
         scan_counter += 1;
-        if scan_counter >= 500 { // 500 * 10ms = 5s
-            let mut bus = i2c0_manager.acquire().unwrap();
-            tools::i2cscanner::scan_i2c_bus(&mut bus, &mut uart, "I2C0 (periodic)");
-            i2c0_manager.release();
+        if scan_counter >= 5 {
             scan_counter = 0;
         }
     }
