@@ -14,6 +14,7 @@ use embedded_hal::i2c::I2c;
 // Import the ICM20948 driver
 mod drivers;
 use drivers::icm20948::{Icm20948, ICM20948_ADDR_AD0_HIGH};
+use drivers::lis3mdl::{Lis3mdl, LIS3MDL_ADDR};
 use drivers::bus_managers::I2cBusManager;
 mod tools;
 
@@ -62,8 +63,9 @@ fn main() -> ! {
     )
     .unwrap();
 
-    // Initialize timer for delays
+    // Initialize timers for delays
     let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut resets, &clocks);
+    let mut timer1 = hal::Timer::new_timer1(pac.TIMER1, &mut resets, &clocks);
 
     // Delay for stabilization after power-on
     timer.delay_ms(200u32);
@@ -146,6 +148,20 @@ fn main() -> ! {
     let _ = icm.write_register(&mut bus, drivers::icm20948::registers::REG_BANK_SEL, 0x00);
     i2c0_manager.release();
 
+    // Initialize LIS3MDL with second timer
+    let mut lis = Lis3mdl::new(timer1, LIS3MDL_ADDR);
+    let mut bus = i2c0_manager.acquire().unwrap();
+    match lis.init(&mut bus) {
+        Ok(()) => {
+            let _ = writeln!(uart, "LIS3MDL initialized\r\n");
+        }
+        Err(e) => {
+            let _ = writeln!(uart, "LIS3MDL init failed: {:?}\r\n", e);
+            // Continue despite failure
+        }
+    }
+    i2c0_manager.release();
+
     icm.delay.delay_ms(200u32); // Delay after init
 
     // Main loop: Read and send IMU data, scan I2C0 every 5 seconds
@@ -161,13 +177,29 @@ fn main() -> ! {
 
         match icm.read_raw(&mut bus) {
             Ok(raw) => {
-                let _ = writeln!(
-                    uart,
-                    "IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {}\r\n",
-                    raw.accel[0], raw.accel[1], raw.accel[2],
-                    raw.gyro[0], raw.gyro[1], raw.gyro[2],
-                    raw.mag[0], raw.mag[1], raw.mag[2]
-                );
+                let mag1_res = lis.read_raw(&mut bus);
+                match mag1_res {
+                    Ok(mag1) => {
+                        let _ = writeln!(
+                            uart,
+                            "IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {} ; MAG1: {}, {}, {}\r\n",
+                            raw.accel[0], raw.accel[1], raw.accel[2],
+                            raw.gyro[0], raw.gyro[1], raw.gyro[2],
+                            raw.mag[0], raw.mag[1], raw.mag[2],
+                            mag1[0], mag1[1], mag1[2]
+                        );
+                    }
+                    Err(_) => {
+                        let _ = writeln!(
+                            uart,
+                            "IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {}\r\n",
+                            raw.accel[0], raw.accel[1], raw.accel[2],
+                            raw.gyro[0], raw.gyro[1], raw.gyro[2],
+                            raw.mag[0], raw.mag[1], raw.mag[2]
+                        );
+                        let _ = writeln!(uart, "Failed to read LIS3MDL\r\n");
+                    }
+                }
             }
             Err(e) => {
                 let _ = writeln!(uart, "Failed to read IMU: {:?}\r\n", e);
