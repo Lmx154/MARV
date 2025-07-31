@@ -15,6 +15,9 @@ use embedded_hal::i2c::I2c;
 mod drivers;
 use drivers::icm20948::{Icm20948, ICM20948_ADDR_AD0_HIGH};
 use drivers::lis3mdl::{Lis3mdl, LIS3MDL_ADDR};
+use drivers::ms5611::{Ms5611, MS5611_ADDR};
+use drivers::pcf8563::{Pcf8563, PCF8563_ADDR};
+use drivers::ublox_neom9n::{GpsModule};
 use drivers::bus_managers::I2cBusManager;
 mod tools;
 
@@ -65,7 +68,7 @@ fn main() -> ! {
 
     // Initialize timers for delays
     let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut resets, &clocks);
-    let mut timer1 = hal::Timer::new_timer1(pac.TIMER1, &mut resets, &clocks);
+    let timer1 = hal::Timer::new_timer1(pac.TIMER1, &mut resets, &clocks);
 
     // Delay for stabilization after power-on
     timer.delay_ms(200u32);
@@ -162,11 +165,55 @@ fn main() -> ! {
     }
     i2c0_manager.release();
 
+    // Initialize MS5611 (barometer) sharing LIS delay
+    let mut baro = Ms5611::new(MS5611_ADDR);
+    match baro.init(&mut i2c1, &mut lis.delay) {
+        Ok(()) => {
+            let _ = writeln!(uart, "MS5611 initialized\r\n");
+        }
+        Err(e) => {
+            let _ = writeln!(uart, "MS5611 init failed: {:?}\r\n", e);
+            // Continue despite failure
+        }
+    }
+
+    // Initialize PCF8563 RTC
+    let mut rtc = Pcf8563::new(PCF8563_ADDR);
+    match rtc.init(&mut i2c1) {
+        Ok(()) => {
+            let _ = writeln!(uart, "PCF8563 RTC initialized\r\n");
+        }
+        Err(e) => {
+            let _ = writeln!(uart, "PCF8563 RTC init failed: {:?}\r\n", e);
+            // Continue despite failure
+        }
+    }
+
+    // Initialize GPS module
+    let mut gps = GpsModule::new();
+    let gps_init_result = gps.init(
+        pac.UART0,
+        pins.gpio0.into_pull_type::<hal::gpio::PullDown>(),
+        pins.gpio1.into_pull_type::<hal::gpio::PullDown>(),
+        &mut resets,
+        &clocks,
+    );
+    match gps_init_result {
+        Ok(()) => {
+            let _ = writeln!(uart, "GPS initialized\r\n");
+        }
+        Err(e) => {
+            let _ = writeln!(uart, "GPS init failed: {:?}\r\n", e);
+        }
+    }
+
     icm.delay.delay_ms(200u32); // Delay after init
 
     // Main loop: Read and send IMU data, scan I2C0 every 5 seconds
     let mut scan_counter: u32 = 0;
     loop {
+        gps.update();
+
         let mut bus = i2c0_manager.acquire().unwrap();
         // Check data ready status
         let int_status = icm.read_register(&mut bus, 0x1A).unwrap_or(0x00);  // INT_STATUS (Bank 0, 0x1A), bit 0 = RAW_DATA_RDY
@@ -180,14 +227,64 @@ fn main() -> ! {
                 let mag1_res = lis.read_raw(&mut bus);
                 match mag1_res {
                     Ok(mag1) => {
-                        let _ = writeln!(
-                            uart,
-                            "IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {} ; MAG1: {}, {}, {}\r\n",
-                            raw.accel[0], raw.accel[1], raw.accel[2],
-                            raw.gyro[0], raw.gyro[1], raw.gyro[2],
-                            raw.mag[0], raw.mag[1], raw.mag[2],
-                            mag1[0], mag1[1], mag1[2]
-                        );
+                        let baro_res = baro.read_raw_pressure(&mut i2c1, &mut lis.delay);
+                        match baro_res {
+                            Ok(baro_raw) => {
+                                let rtc_res = rtc.read_time(&mut i2c1);
+                                match rtc_res {
+                                    Ok(rtc_time) => {
+                                        let gps_data = gps.get_last_data();
+                                        let lat_whole = gps_data.latitude / 10000000;
+                                        let lat_frac = ((gps_data.latitude % 10000000).abs()) as u32;
+                                        let lon_whole = gps_data.longitude / 10000000;
+                                        let lon_frac = ((gps_data.longitude % 10000000).abs()) as u32;
+                                        let alt_m = gps_data.altitude / 1000;
+
+                                        let _ = writeln!(
+                                            uart,
+                                            "RTC: {:02}/{:02}/{:04}, {:02}:{:02}:{:02} ; IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {} ; MAG1: {}, {}, {} ; BARO: {} ; GPS: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}, {}.{:07}, {}, {}, {}\r\n",
+                                            rtc_time.day, rtc_time.month, rtc_time.year,
+                                            rtc_time.hour, rtc_time.minute, rtc_time.second,
+                                            raw.accel[0], raw.accel[1], raw.accel[2],
+                                            raw.gyro[0], raw.gyro[1], raw.gyro[2],
+                                            raw.mag[0], raw.mag[1], raw.mag[2],
+                                            mag1[0], mag1[1], mag1[2],
+                                            baro_raw,
+                                            gps_data.day, gps_data.month, gps_data.year,
+                                            gps_data.hour, gps_data.minute, gps_data.second,
+                                            lat_whole, lat_frac,
+                                            lon_whole, lon_frac,
+                                            alt_m,
+                                            gps_data.satellites,
+                                            gps_data.fix_type
+                                        );
+                                    }
+                                    Err(_) => {
+                                        let _ = writeln!(
+                                            uart,
+                                            "IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {} ; MAG1: {}, {}, {} ; BARO: {}\r\n",
+                                            raw.accel[0], raw.accel[1], raw.accel[2],
+                                            raw.gyro[0], raw.gyro[1], raw.gyro[2],
+                                            raw.mag[0], raw.mag[1], raw.mag[2],
+                                            mag1[0], mag1[1], mag1[2],
+                                            baro_raw
+                                        );
+                                        let _ = writeln!(uart, "Failed to read PCF8563 RTC\r\n");
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                let _ = writeln!(
+                                    uart,
+                                    "IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {} ; MAG1: {}, {}, {}\r\n",
+                                    raw.accel[0], raw.accel[1], raw.accel[2],
+                                    raw.gyro[0], raw.gyro[1], raw.gyro[2],
+                                    raw.mag[0], raw.mag[1], raw.mag[2],
+                                    mag1[0], mag1[1], mag1[2]
+                                );
+                                let _ = writeln!(uart, "Failed to read MS5611\r\n");
+                            }
+                        }
                     }
                     Err(_) => {
                         let _ = writeln!(
