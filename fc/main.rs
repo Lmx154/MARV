@@ -1,199 +1,319 @@
-// fc/main.rs
 #![no_std]
 #![no_main]
 
-// Tell the Boot ROM about our application
+use rp235x_hal as hal;
+use hal::clocks::Clock;
+use hal::entry;
+use core::fmt::Write;
+use panic_halt as _;
+use hal::fugit::RateExtU32;
+use hal::gpio::{FunctionI2C, PullUp};
+use embedded_hal::delay::DelayNs;
+use embedded_hal::i2c::I2c;
+
+// Import the ICM20948 driver
+mod drivers;
+use drivers::icm20948::{Icm20948, ICM20948_ADDR_AD0_HIGH};
+use drivers::lis3mdl::{Lis3mdl, LIS3MDL_ADDR};
+use drivers::ms5611::{Ms5611, MS5611_ADDR};
+use drivers::pcf8563::{Pcf8563, PCF8563_ADDR};
+use drivers::ublox_neom9n::{GpsModule};
+use drivers::bus_managers::I2cBusManager;
+mod tools;
+
 #[link_section = ".start_block"]
 #[used]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
-use panic_halt as _;
-use rp235x_hal as hal;
-use rtic::app;
-use hal::gpio::{Pin, bank0::{Gpio2, Gpio3, Gpio4, Gpio5, Gpio20, Gpio21}, PullNone, PullUp, FunctionUart, FunctionI2C};
-use hal::timer::{Timer, CopyableTimer0, Alarm};
-use hal::fugit::{HertzU32, MicrosDurationU32};
-use hal::clocks::Clock;
-use hal::i2c::I2C;
-mod drivers;
-use drivers::bus_managers::I2cBusManager;
-use drivers::icm20948::{Icm20948, RawImu, ICM20948_ADDR_AD0_HIGH};
-use core::fmt::Write;
-mod tools;
+#[entry]
+fn main() -> ! {
+    // Take ownership of peripherals
+    let mut pac = hal::pac::Peripherals::take().unwrap();
 
-#[app(device = hal::pac, peripherals = true, dispatchers = [TIMER0_IRQ_1])]
-mod app {
-    #[idle(shared = [timer, debug_uart])]
-    fn idle(mut cx: idle::Context) -> ! {
-        let mut counter = 0u32;
-        loop {
-            cx.shared.timer.lock(|timer| {
-                let current_count = timer.get_counter_low();
-                if counter % 1000 == 0 {
-                    cx.shared.debug_uart.lock(|uart| {
-                        let _ = write!(uart, "Timer count: {}\r\n", current_count);
-                    });
-                }
-            if let Some(mut alarm) = timer.alarm_0() {
-                if alarm.finished() {
-                    cx.shared.debug_uart.lock(|uart| {
-                        let _ = write!(uart, "Alarm finished but task not triggered\r\n");
-                    });
-                    alarm.clear_interrupt();
-                }
-            }
-                counter += 1;
-            });
-            // Busy wait for ~1ms to avoid flooding UART
-            for _ in 0..10000 {}
+    // Initialize watchdog and clocks
+    let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
+    let clocks = hal::clocks::init_clocks_and_plls(
+        12_000_000u32,
+        pac.XOSC,
+        pac.CLOCKS,
+        pac.PLL_SYS,
+        pac.PLL_USB,
+        &mut pac.RESETS,
+        &mut watchdog,
+    )
+    .unwrap();
+
+    // Reset peripherals
+    let mut resets = pac.RESETS;
+
+    // Initialize SIO and pins
+    let sio = hal::Sio::new(pac.SIO);
+    let pins = hal::gpio::Pins::new(
+        pac.IO_BANK0,
+        pac.PADS_BANK0,
+        sio.gpio_bank0,
+        &mut resets,
+    );
+
+    // Configure UART1 pins: GP4 (TX), GP5 (RX)
+    let tx_pin = pins.gpio4.into_function::<hal::gpio::FunctionUart>();
+    let rx_pin = pins.gpio5.into_function::<hal::gpio::FunctionUart>();
+
+    // Initialize and enable UART1 with default configuration
+    let mut uart = hal::uart::UartPeripheral::new(pac.UART1, (tx_pin, rx_pin), &mut resets).enable(
+        hal::uart::UartConfig::default(),
+        clocks.peripheral_clock.freq(),
+    )
+    .unwrap();
+
+    // Initialize timers for delays
+    let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut resets, &clocks);
+    let timer1 = hal::Timer::new_timer1(pac.TIMER1, &mut resets, &clocks);
+
+    // Delay for stabilization after power-on
+    timer.delay_ms(200u32);
+
+    // Configure I2C0 pins: GP20 (SDA), GP21 (SCL)
+    let i2c0_sda = pins.gpio20.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
+    let i2c0_scl = pins.gpio21.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
+
+    // Initialize I2C0 at 100 kHz
+    let i2c0 = hal::i2c::I2C::i2c0(
+        pac.I2C0,
+        i2c0_sda,
+        i2c0_scl,
+        100u32.kHz(),
+        &mut resets,
+        clocks.system_clock.freq(),
+    );
+
+    // Wrap in bus manager
+    let mut i2c0_manager = I2cBusManager::<hal::pac::I2C0, hal::gpio::bank0::Gpio20, hal::gpio::bank0::Gpio21>::new(i2c0);
+
+    // Configure I2C1 pins: GP2 (SDA), GP3 (SCL)
+    let i2c1_sda = pins.gpio2.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
+    let i2c1_scl = pins.gpio3.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
+
+    // Initialize I2C1 at 100 kHz
+    let mut i2c1 = hal::i2c::I2C::i2c1(
+        pac.I2C1,
+        i2c1_sda,
+        i2c1_scl,
+        100u32.kHz(),
+        &mut resets,
+        clocks.system_clock.freq(),
+    );
+
+    // Scan I2C buses to confirm devices
+    tools::i2cscanner::scan_i2c_bus(&mut i2c0_manager.acquire().unwrap(), &mut uart, "I2C0");
+    i2c0_manager.release();
+    tools::i2cscanner::scan_i2c_bus(&mut i2c1, &mut uart, "I2C1");
+
+    // Initialize ICM20948 with timer as delay provider
+    let mut icm = Icm20948::new(timer, ICM20948_ADDR_AD0_HIGH);
+
+    // Initialize the IMU using bus manager
+    let mut bus = i2c0_manager.acquire().unwrap();
+    match icm.init(&mut bus) {
+        Ok(()) => {
+            let _ = writeln!(uart, "ICM20948 IMU initialized\r\n");
+        }
+        Err(e) => {
+            let _ = writeln!(uart, "ICM20948 IMU init failed: {:?}\r\n", e);
+            // Continue despite failure to allow partial operation
         }
     }
-    use super::*;
-    use hal::gpio::bank0;
 
-    #[shared]
-    struct Shared {
-        i2c0_manager: I2cBusManager<hal::pac::I2C0, bank0::Gpio20, bank0::Gpio21>,
-        i2c1_manager: I2cBusManager<hal::pac::I2C1, bank0::Gpio2, bank0::Gpio3>,
-        icm20948: Icm20948<Timer<CopyableTimer0>>,
-        timer: Timer<CopyableTimer0>,
-        debug_uart: hal::uart::UartPeripheral<hal::uart::Enabled, hal::pac::UART1, (Pin<bank0::Gpio4, FunctionUart, PullNone>, Pin<bank0::Gpio5, FunctionUart, PullNone>)>,
+    // Diagnostic: Read mag WHO_AM_I directly
+    let mut mag_id_buf = [0u8; 1];
+    let mag_id_result = bus.write_read(drivers::icm20948::ak09916::ADDR, &[drivers::icm20948::ak09916::WHO_AM_I], &mut mag_id_buf);
+    match mag_id_result {
+        Ok(()) => {
+            let _ = writeln!(uart, "Mag WHO_AM_I: 0x{:02X}\r\n", mag_id_buf[0]);
+        }
+        Err(_) => {
+            let _ = writeln!(uart, "Mag WHO_AM_I read failed\r\n");
+        }
+    }
+    i2c0_manager.release();
+
+    // Verify key registers post-init
+    let mut bus = i2c0_manager.acquire().unwrap();
+    let pwr_mgmt_1 = icm.read_register(&mut bus, drivers::icm20948::registers::PWR_MGMT_1).unwrap_or(0xFF);
+    let _ = writeln!(uart, "PWR_MGMT_1 read-back: 0x{:02X}\r\n", pwr_mgmt_1);  // Should be 0x01
+    // Switch to Bank 2 to check configs
+    let _ = icm.write_register(&mut bus, drivers::icm20948::registers::REG_BANK_SEL, 0x20);
+    let gyro_config_1 = icm.read_register(&mut bus, drivers::icm20948::registers::GYRO_CONFIG_1).unwrap_or(0xFF);
+    let _ = writeln!(uart, "GYRO_CONFIG_1 read-back: 0x{:02X}\r\n", gyro_config_1);  // Should be 0x00
+    let accel_config = icm.read_register(&mut bus, drivers::icm20948::registers::ACCEL_CONFIG).unwrap_or(0xFF);
+    let _ = writeln!(uart, "ACCEL_CONFIG read-back: 0x{:02X}\r\n", accel_config);  // Should be 0x00
+    // Back to Bank 0
+    let _ = icm.write_register(&mut bus, drivers::icm20948::registers::REG_BANK_SEL, 0x00);
+    i2c0_manager.release();
+
+    // Initialize LIS3MDL with second timer
+    let mut lis = Lis3mdl::new(timer1, LIS3MDL_ADDR);
+    let mut bus = i2c0_manager.acquire().unwrap();
+    match lis.init(&mut bus) {
+        Ok(()) => {
+            let _ = writeln!(uart, "LIS3MDL initialized\r\n");
+        }
+        Err(e) => {
+            let _ = writeln!(uart, "LIS3MDL init failed: {:?}\r\n", e);
+            // Continue despite failure
+        }
+    }
+    i2c0_manager.release();
+
+    // Initialize MS5611 (barometer) sharing LIS delay
+    let mut baro = Ms5611::new(MS5611_ADDR);
+    match baro.init(&mut i2c1, &mut lis.delay) {
+        Ok(()) => {
+            let _ = writeln!(uart, "MS5611 initialized\r\n");
+        }
+        Err(e) => {
+            let _ = writeln!(uart, "MS5611 init failed: {:?}\r\n", e);
+            // Continue despite failure
+        }
     }
 
-    #[local]
-    struct Local {}
-
-    #[init]
-    fn init(cx: init::Context) -> (Shared, Local) {
-        let mut resets = cx.device.RESETS;
-        let mut watchdog = hal::Watchdog::new(cx.device.WATCHDOG);
-
-
-        let clocks = hal::clocks::init_clocks_and_plls(
-            12_000_000u32,
-            cx.device.XOSC,
-            cx.device.CLOCKS,
-            cx.device.PLL_SYS,
-            cx.device.PLL_USB,
-            &mut resets,
-            &mut watchdog,
-        ).unwrap();
-
-        // Enable 1 MHz timer tick generation from 12 MHz reference clock
-        watchdog.enable_tick_generation(12);
-
-        let mut timer = Timer::new_timer0(cx.device.TIMER0, &mut resets, &clocks);
-        let pins = hal::gpio::Pins::new(
-            cx.device.IO_BANK0,
-            cx.device.PADS_BANK0,
-            hal::Sio::new(cx.device.SIO).gpio_bank0,
-            &mut resets,
-        );
-
-        let tx_pin = pins.gpio4.into_pull_type::<PullNone>().into_function::<FunctionUart>();
-        let rx_pin = pins.gpio5.into_pull_type::<PullNone>().into_function::<FunctionUart>();
-        let uart_pins = (tx_pin, rx_pin);
-
-        let mut debug_uart = hal::uart::UartPeripheral::new(cx.device.UART1, uart_pins, &mut resets).enable(
-            hal::uart::UartConfig::default(),
-            clocks.peripheral_clock.freq(),
-        ).unwrap();
-
-        // Set up I2C0 (GP20 SDA, GP21 SCL)
-        let i2c0_sda = pins.gpio20.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
-        let i2c0_scl = pins.gpio21.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
-        let mut i2c0 = I2C::i2c0(cx.device.I2C0, i2c0_sda, i2c0_scl, HertzU32::kHz(100), &mut resets, clocks.system_clock.freq());
-
-        // Scan I2C0
-        tools::i2cscanner::scan_i2c_bus(&mut i2c0, &mut debug_uart, "I2C0 Bus (GP20 SDA, GP21 SCL)");
-
-        let mut i2c0_manager = I2cBusManager::new(i2c0);
-
-        // Set up I2C1 (GP2 SDA, GP3 SCL)
-        let i2c1_sda = pins.gpio2.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
-        let i2c1_scl = pins.gpio3.into_pull_type::<PullUp>().into_function::<FunctionI2C>();
-        let mut i2c1 = I2C::i2c1(cx.device.I2C1, i2c1_sda, i2c1_scl, HertzU32::kHz(100), &mut resets, clocks.system_clock.freq());
-
-        // Scan I2C1
-        tools::i2cscanner::scan_i2c_bus(&mut i2c1, &mut debug_uart, "I2C1 Bus (GP2 SDA, GP3 SCL)");
-
-        let i2c1_manager = I2cBusManager::new(i2c1);
-
-        let mut icm20948 = Icm20948::new(timer.clone(), ICM20948_ADDR_AD0_HIGH);
-        {
-            if let Some(i2c_ref) = i2c0_manager.acquire() {
-                match icm20948.init(i2c_ref) {
-                    Ok(()) => {
-                        let _ = write!(debug_uart, "ICM20948 IMU initialized\r\n");
-                    }
-                    Err(e) => {
-                        let _ = write!(debug_uart, "ICM20948 IMU init failed: {:?}\r\n", e);
-                    }
-                }
-            } else {
-                let _ = write!(debug_uart, "Could not acquire I2C for IMU init\r\n");
-            }
+    // Initialize PCF8563 RTC
+    let mut rtc = Pcf8563::new(PCF8563_ADDR);
+    match rtc.init(&mut i2c1) {
+        Ok(()) => {
+            let _ = writeln!(uart, "PCF8563 RTC initialized\r\n");
         }
-
-        let mut alarm = timer.alarm_0().unwrap();
-        alarm.schedule(MicrosDurationU32::secs(1)).unwrap();
-        alarm.enable_interrupt();
-
-        // Unmask TIMER0_IRQ_0 interrupt at the NVIC level (required for Cortex-M33)
-        use cortex_m::peripheral::NVIC;
-        unsafe {
-            NVIC::unmask(hal::pac::Interrupt::TIMER0_IRQ_0);
+        Err(e) => {
+            let _ = writeln!(uart, "PCF8563 RTC init failed: {:?}\r\n", e);
+            // Continue despite failure
         }
-
-        (Shared { i2c0_manager, i2c1_manager, icm20948, timer, debug_uart }, Local {})
     }
 
-    #[task(binds = TIMER0_IRQ_0, priority = 2, shared = [i2c0_manager, icm20948, timer, debug_uart])]
-    fn sensor_read(mut cx: sensor_read::Context) {
-        cx.shared.timer.lock(|timer| {
-            let mut alarm = timer.alarm_0().unwrap();
-            alarm.clear_interrupt();
-        });
+    // Initialize GPS module
+    let mut gps = GpsModule::new();
+    let gps_init_result = gps.init(
+        pac.UART0,
+        pins.gpio0.into_pull_type::<hal::gpio::PullDown>(),
+        pins.gpio1.into_pull_type::<hal::gpio::PullDown>(),
+        &mut resets,
+        &clocks,
+    );
+    match gps_init_result {
+        Ok(()) => {
+            let _ = writeln!(uart, "GPS initialized\r\n");
+        }
+        Err(e) => {
+            let _ = writeln!(uart, "GPS init failed: {:?}\r\n", e);
+        }
+    }
 
-        let mut raw_data: Option<RawImu> = None;
-        cx.shared.i2c0_manager.lock(|manager| {
-            if let Some(i2c) = manager.acquire() {
-                cx.shared.icm20948.lock(|imu| {
-                    match imu.read_raw(i2c) {
-                        Ok(raw) => {
-                            raw_data = Some(raw);
+    icm.delay.delay_ms(200u32); // Delay after init
+
+    // Main loop: Read and send IMU data, scan I2C0 every 5 seconds
+    let mut scan_counter: u32 = 0;
+    loop {
+        gps.update();
+
+        let mut bus = i2c0_manager.acquire().unwrap();
+        // Check data ready status
+        let int_status = icm.read_register(&mut bus, 0x1A).unwrap_or(0x00);  // INT_STATUS (Bank 0, 0x1A), bit 0 = RAW_DATA_RDY
+        let _ = writeln!(uart, "Data ready status: 0x{:02X}\r\n", int_status);
+        if int_status & 0x01 == 0 {
+            let _ = writeln!(uart, "Warning: No new data ready\r\n");
+        }
+
+        match icm.read_raw(&mut bus) {
+            Ok(raw) => {
+                let mag1_res = lis.read_raw(&mut bus);
+                match mag1_res {
+                    Ok(mag1) => {
+                        let baro_res = baro.read_raw_pressure(&mut i2c1, &mut lis.delay);
+                        match baro_res {
+                            Ok(baro_raw) => {
+                                let rtc_res = rtc.read_time(&mut i2c1);
+                                match rtc_res {
+                                    Ok(rtc_time) => {
+                                        let gps_data = gps.get_last_data();
+                                        let lat_whole = gps_data.latitude / 10000000;
+                                        let lat_frac = ((gps_data.latitude % 10000000).abs()) as u32;
+                                        let lon_whole = gps_data.longitude / 10000000;
+                                        let lon_frac = ((gps_data.longitude % 10000000).abs()) as u32;
+                                        let alt_m = gps_data.altitude / 1000;
+
+                                        let _ = writeln!(
+                                            uart,
+                                            "RTC: {:02}/{:02}/{:04}, {:02}:{:02}:{:02} ; IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {} ; MAG1: {}, {}, {} ; BARO: {} ; GPS: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}, {}.{:07}, {}, {}, {}\r\n",
+                                            rtc_time.day, rtc_time.month, rtc_time.year,
+                                            rtc_time.hour, rtc_time.minute, rtc_time.second,
+                                            raw.accel[0], raw.accel[1], raw.accel[2],
+                                            raw.gyro[0], raw.gyro[1], raw.gyro[2],
+                                            raw.mag[0], raw.mag[1], raw.mag[2],
+                                            mag1[0], mag1[1], mag1[2],
+                                            baro_raw,
+                                            gps_data.day, gps_data.month, gps_data.year,
+                                            gps_data.hour, gps_data.minute, gps_data.second,
+                                            lat_whole, lat_frac,
+                                            lon_whole, lon_frac,
+                                            alt_m,
+                                            gps_data.satellites,
+                                            gps_data.fix_type
+                                        );
+                                    }
+                                    Err(_) => {
+                                        let _ = writeln!(
+                                            uart,
+                                            "IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {} ; MAG1: {}, {}, {} ; BARO: {}\r\n",
+                                            raw.accel[0], raw.accel[1], raw.accel[2],
+                                            raw.gyro[0], raw.gyro[1], raw.gyro[2],
+                                            raw.mag[0], raw.mag[1], raw.mag[2],
+                                            mag1[0], mag1[1], mag1[2],
+                                            baro_raw
+                                        );
+                                        let _ = writeln!(uart, "Failed to read PCF8563 RTC\r\n");
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                let _ = writeln!(
+                                    uart,
+                                    "IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {} ; MAG1: {}, {}, {}\r\n",
+                                    raw.accel[0], raw.accel[1], raw.accel[2],
+                                    raw.gyro[0], raw.gyro[1], raw.gyro[2],
+                                    raw.mag[0], raw.mag[1], raw.mag[2],
+                                    mag1[0], mag1[1], mag1[2]
+                                );
+                                let _ = writeln!(uart, "Failed to read MS5611\r\n");
+                            }
                         }
-                        Err(e) => {
-                            cx.shared.debug_uart.lock(|uart| {
-                                let _ = write!(uart, "Failed to read IMU: {:?}\r\n", e);
-                            });
-                        }
                     }
-                });
-                manager.release();
-            } else {
-                cx.shared.debug_uart.lock(|uart| {
-                    let _ = write!(uart, "Could not acquire I2C for IMU read\r\n");
-                });
+                    Err(_) => {
+                        let _ = writeln!(
+                            uart,
+                            "IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {}\r\n",
+                            raw.accel[0], raw.accel[1], raw.accel[2],
+                            raw.gyro[0], raw.gyro[1], raw.gyro[2],
+                            raw.mag[0], raw.mag[1], raw.mag[2]
+                        );
+                        let _ = writeln!(uart, "Failed to read LIS3MDL\r\n");
+                    }
+                }
             }
-        });
-
-        if let Some(raw) = raw_data {
-            cx.shared.debug_uart.lock(|uart| {
-                let _ = write!(uart, "IMU1: accel {}, {}, {}; gyro {}, {}, {}; mag {}, {}, {}\r\n",
-                    raw.accel[0], raw.accel[1], raw.accel[2],
-                    raw.gyro[0], raw.gyro[1], raw.gyro[2],
-                    raw.mag[0], raw.mag[1], raw.mag[2]);
-            });
-        } else {
-            cx.shared.debug_uart.lock(|uart| {
-                let _ = write!(uart, "IMU not read\r\n");
-            });
+            Err(e) => {
+                let _ = writeln!(uart, "Failed to read IMU: {:?}\r\n", e);
+            }
         }
+        i2c0_manager.release();
 
-        cx.shared.timer.lock(|timer| {
-            let mut alarm = timer.alarm_0().unwrap();
-            alarm.schedule(MicrosDurationU32::secs(1)).unwrap();
-        });
+        // Delay for 1 second
+        icm.delay.delay_ms(1000u32);
+
+        // Increment counter and scan every 5 iterations
+        scan_counter += 1;
+        if scan_counter >= 5 {
+            let mut bus = i2c0_manager.acquire().unwrap();
+            tools::i2cscanner::scan_i2c_bus(&mut bus, &mut uart, "I2C0 (periodic)");
+            i2c0_manager.release();
+            scan_counter = 0;
+        }
     }
 }
