@@ -37,6 +37,8 @@ use sensors::gps::GpsModule;
 // Drivers
 mod drivers;
 use drivers::rgb_led::{RgbLed, Polarity};
+use embedded_hal::pwm::SetDutyCycle;
+use hal::pwm::Slices;
 
 /// Tell the Boot ROM about our application
 #[link_section = ".start_block"]
@@ -98,6 +100,26 @@ fn main() -> ! {
     let mut rgb = RgbLed::new(r_pin, g_pin, b_pin, Polarity::ActiveLow);
     rgb.off();
     info!("RGB LED configured on GP14 (R), GP15 (G), GP27 (B) - Common Anode");
+
+    // --- Passive buzzer on GP26 using PWM slice 5 channel A ---
+    // Goal: 1 kHz square wave @ 50% duty toggled on/off every second
+    let pwm_slices = Slices::new(pac.PWM, &mut pac.RESETS);
+    let mut pwm5 = pwm_slices.pwm5; // Slice 5 supports GPIO26 (channel A)
+    pwm5.default_config();
+    // System clock ~125MHz. Divide by 125 -> 1MHz tick. TOP=999 -> 1kHz.
+    pwm5.set_div_int(125); // integer divider
+    pwm5.set_div_frac(0);
+    pwm5.set_top(999); // counts 0..999 (1000 cycles)
+    // Enable slice before configuring channel outputs
+    pwm5.enable();
+    // Attach channel A to GPIO26 (channel A corresponds to even pin in slice group containing GPIO26)
+    let mut ch_a = pwm5.channel_a; // take channel ownership
+    let _buzz_pin = ch_a.output_to(pins.gpio26); // move pin into PWM function
+    // Prepare 50% duty (will be enabled when tone_on true)
+    let _ = ch_a.set_duty_cycle(500); // half of (TOP+1) = 1000
+    let mut tone_on = false; // start silent
+    // Ensure silent initially by setting duty 0
+    let _ = ch_a.set_duty_cycle(0);
     
     // Initialize GPS module
     let mut gps = GpsModule::new();
@@ -131,6 +153,18 @@ fn main() -> ! {
                 led_pin.set_high().unwrap();
             } else {
                 led_pin.set_low().unwrap();
+            }
+            // Toggle buzzer once per LED blink interval (approx 0.1s currently?)
+            // For "very basic test" make it on/off every status print (~1s). Accumulate using tone_on.
+        }
+
+        // Turn tone on/off roughly every second using STATUS_PRINT_INTERVAL
+        if counter % constants::STATUS_PRINT_INTERVAL == 0 {
+            tone_on = !tone_on;
+            if tone_on {
+                let _ = ch_a.set_duty_cycle(500); // 50%
+            } else {
+                let _ = ch_a.set_duty_cycle(0); // silence
             }
         }
 
