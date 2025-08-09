@@ -37,7 +37,8 @@ use sensors::gps::GpsModule;
 // Drivers
 mod drivers;
 use drivers::rgb_led::{RgbLed, Polarity};
-use embedded_hal::pwm::SetDutyCycle;
+use drivers::buzzer::Buzzer;
+//use embedded_hal::pwm::SetDutyCycle;
 use hal::pwm::Slices;
 
 /// Tell the Boot ROM about our application
@@ -102,24 +103,17 @@ fn main() -> ! {
     info!("RGB LED configured on GP14 (R), GP15 (G), GP27 (B) - Common Anode");
 
     // --- Passive buzzer on GP26 using PWM slice 5 channel A ---
-    // Goal: 1 kHz square wave @ 50% duty toggled on/off every second
     let pwm_slices = Slices::new(pac.PWM, &mut pac.RESETS);
     let mut pwm5 = pwm_slices.pwm5; // Slice 5 supports GPIO26 (channel A)
     pwm5.default_config();
-    // System clock ~125MHz. Divide by 125 -> 1MHz tick. TOP=999 -> 1kHz.
-    pwm5.set_div_int(125); // integer divider
+    pwm5.set_div_int(125); // integer divider: 125MHz / 125 = 1MHz
     pwm5.set_div_frac(0);
-    pwm5.set_top(999); // counts 0..999 (1000 cycles)
-    // Enable slice before configuring channel outputs
+    pwm5.set_top(999); // 1 kHz tone
     pwm5.enable();
-    // Attach channel A to GPIO26 (channel A corresponds to even pin in slice group containing GPIO26)
     let mut ch_a = pwm5.channel_a; // take channel ownership
     let _buzz_pin = ch_a.output_to(pins.gpio26); // move pin into PWM function
-    // Prepare 50% duty (will be enabled when tone_on true)
-    let _ = ch_a.set_duty_cycle(500); // half of (TOP+1) = 1000
-    let mut tone_on = false; // start silent
-    // Ensure silent initially by setting duty 0
-    let _ = ch_a.set_duty_cycle(0);
+    let mut buzzer = Buzzer::new(ch_a, 500); // 50% duty for 1kHz square wave
+    buzzer.off();
     
     // Initialize GPS module
     let mut gps = GpsModule::new();
@@ -160,27 +154,19 @@ fn main() -> ! {
 
         // Turn tone on/off roughly every second using STATUS_PRINT_INTERVAL
         if counter % constants::STATUS_PRINT_INTERVAL == 0 {
-            tone_on = !tone_on;
-            if tone_on {
-                let _ = ch_a.set_duty_cycle(500); // 50%
-            } else {
-                let _ = ch_a.set_duty_cycle(0); // silence
-            }
+            if buzzer.toggle() { info!("Buzzer ON"); } else { info!("Buzzer OFF"); }
         }
 
-        // Cycle RGB LED: Red -> Green -> Blue, each for ~500ms
+        // Cycle RGB LED through extended palette every ~0.5s
         if counter % (constants::STATUS_PRINT_INTERVAL / 2) == 0 {
-            let phase = (counter / (constants::STATUS_PRINT_INTERVAL / 2)) % 3;
+            let phase = (counter / (constants::STATUS_PRINT_INTERVAL / 2)) % 6;
             match phase {
-                0 => {
-                    rgb.red();
-                }
-                1 => {
-                    rgb.green();
-                }
-                _ => {
-                    rgb.blue();
-                }
+                0 => rgb.red(),
+                1 => rgb.orange(),
+                2 => rgb.green(),
+                3 => rgb.cyan(),
+                4 => rgb.blue(),
+                _ => rgb.purple(),
             }
         }
         

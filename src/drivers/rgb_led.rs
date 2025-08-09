@@ -15,6 +15,25 @@ pub enum Polarity {
     ActiveLow,
 }
 
+/// Common named colors (additive RGB, boolean channels only).
+/// For more granular colors (with PWM), a future enhancement would accept duty values.
+#[derive(Copy, Clone)]
+pub enum Color {
+    Off,
+    Red,
+    Green,
+    Blue,
+    Yellow,   // R + G
+    Cyan,     // G + B
+    Magenta,  // R + B
+    White,    // R + G + B
+    Orange,   // R + (G) ~ approximate using R+G
+    Pink,     // Magenta approximation
+    Purple,   // Magenta alias
+    // Additional readable aliases
+    Turquoise, // Cyan alias
+}
+
 /// A simple RGB LED composed of three output-capable pins.
 /// The pins can be any type implementing `embedded_hal::digital::OutputPin`.
 pub struct RgbLed<R, G, B>
@@ -55,40 +74,51 @@ where
         }
     }
 
-    /// Set the LED to red only.
-    pub fn red(&mut self) {
-        self.set(true, false, false);
+    /// Set via enum Color for quick use.
+    pub fn set_color(&mut self, color: Color) {
+        use Color::*;
+        match color {
+            Off => self.set(false, false, false),
+            Red => self.set(true, false, false),
+            Green => self.set(false, true, false),
+            Blue => self.set(false, false, true),
+            Yellow => self.set(true, true, false),
+            Cyan | Turquoise => self.set(false, true, true),
+            Magenta | Pink | Purple => self.set(true, false, true),
+            White => self.set(true, true, true),
+            Orange => self.set(true, true, false), // same as yellow for boolean pins
+        }
     }
+
+    /// Set the LED to red only.
+    pub fn red(&mut self) { self.set_color(Color::Red); }
 
     /// Set the LED to green only.
-    pub fn green(&mut self) {
-        self.set(false, true, false);
-    }
+    pub fn green(&mut self) { self.set_color(Color::Green); }
 
     /// Set the LED to blue only.
-    pub fn blue(&mut self) {
-        self.set(false, false, true);
-    }
+    pub fn blue(&mut self) { self.set_color(Color::Blue); }
 
     /// Set the LED to yellow (red + green).
-    pub fn yellow(&mut self) {
-        self.set(true, true, false);
-    }
+    pub fn yellow(&mut self) { self.set_color(Color::Yellow); }
 
     /// Set the LED to magenta/pink (red + blue).
-    pub fn magenta(&mut self) {
-        self.set(true, false, true);
-    }
+    pub fn magenta(&mut self) { self.set_color(Color::Magenta); }
 
     /// Set the LED to cyan/turquoise (green + blue).
-    pub fn cyan(&mut self) {
-        self.set(false, true, true);
-    }
+    pub fn cyan(&mut self) { self.set_color(Color::Cyan); }
 
     /// Set the LED to white (all colors).
-    pub fn white(&mut self) {
-        self.set(true, true, true);
-    }
+    pub fn white(&mut self) { self.set_color(Color::White); }
+
+    /// Convenience: orange (alias of yellow with discrete pins)
+    pub fn orange(&mut self) { self.set_color(Color::Orange); }
+
+    /// Convenience: pink (magenta alias)
+    pub fn pink(&mut self) { self.set_color(Color::Pink); }
+
+    /// Convenience: purple (magenta alias)
+    pub fn purple(&mut self) { self.set_color(Color::Purple); }
 
     /// Internal helper to set individual channels.
     fn set(&mut self, r_on: bool, g_on: bool, b_on: bool) {
@@ -107,7 +137,5 @@ where
     }
 
     /// Consume and return the underlying pins.
-    pub fn release(self) -> (R, G, B) {
-        (self.r, self.g, self.b)
-    }
+    pub fn release(self) -> (R, G, B) { (self.r, self.g, self.b) }
 }
