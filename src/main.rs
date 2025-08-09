@@ -34,6 +34,10 @@ use hardware::{HARDWARE, constants};
 mod sensors;
 use sensors::gps::GpsModule;
 
+// Drivers
+mod drivers;
+use drivers::rgb_led::{RgbLed, Polarity};
+
 /// Tell the Boot ROM about our application
 #[link_section = ".start_block"]
 #[used]
@@ -83,9 +87,17 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    // Configure GPIO25 as an output for LED
+    // Configure GPIO25 as an output for on-board LED
     let mut led_pin = pins.gpio25.into_push_pull_output();
     info!("GPIO{} (LED) configured as output", HARDWARE.led_pin());
+
+    // Configure external RGB LED pins: R=GP14, G=GP15, B=GP27
+    let r_pin = pins.gpio14.into_push_pull_output();
+    let g_pin = pins.gpio15.into_push_pull_output();
+    let b_pin = pins.gpio27.into_push_pull_output();
+    let mut rgb = RgbLed::new(r_pin, g_pin, b_pin, Polarity::ActiveLow);
+    rgb.off();
+    info!("RGB LED configured on GP14 (R), GP15 (G), GP27 (B) - Common Anode");
     
     // Initialize GPS module
     let mut gps = GpsModule::new();
@@ -113,12 +125,28 @@ fn main() -> ! {
         // Poll GPS for new data
         gps.update();
         
-        // Blink LED every 1000 iterations
+        // Blink on-board LED every 1000 iterations
         if counter % constants::LED_BLINK_INTERVAL == 0 {
             if (counter / constants::LED_BLINK_INTERVAL) % 2 == 0 {
                 led_pin.set_high().unwrap();
             } else {
                 led_pin.set_low().unwrap();
+            }
+        }
+
+        // Cycle RGB LED: Red -> Green -> Blue, each for ~500ms
+        if counter % (constants::STATUS_PRINT_INTERVAL / 2) == 0 {
+            let phase = (counter / (constants::STATUS_PRINT_INTERVAL / 2)) % 3;
+            match phase {
+                0 => {
+                    rgb.red();
+                }
+                1 => {
+                    rgb.green();
+                }
+                _ => {
+                    rgb.blue();
+                }
             }
         }
         
