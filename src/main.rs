@@ -36,8 +36,11 @@ use sensors::gps::GpsModule;
 
 // Drivers
 mod drivers;
+mod middleware;
 use drivers::rgb_led::{RgbLed, Polarity};
 use drivers::buzzer::Buzzer;
+use middleware::buzzer_api::BuzzerController;
+use middleware::rgb_led_api::{RgbLedController, LedColor};
 use hal::pwm::Slices;
 
 /// Tell the Boot ROM about our application
@@ -97,8 +100,9 @@ fn main() -> ! {
     let r_pin = pins.gpio14.into_push_pull_output();
     let g_pin = pins.gpio15.into_push_pull_output();
     let b_pin = pins.gpio27.into_push_pull_output();
-    let mut rgb = RgbLed::new(r_pin, g_pin, b_pin, Polarity::ActiveLow);
-    rgb.off();
+    let rgb_driver = RgbLed::new(r_pin, g_pin, b_pin, Polarity::ActiveLow);
+    let mut rgb = RgbLedController::new(rgb_driver);
+    rgb.set_color(LedColor::Off);
     info!("RGB LED configured on GP14 (R), GP15 (G), GP27 (B) - Common Anode");
 
     // --- Passive buzzer on GP26 using PWM slice 5 channel A ---
@@ -111,8 +115,9 @@ fn main() -> ! {
     pwm5.enable();
     let mut ch_a = pwm5.channel_a; // take channel ownership
     let _buzz_pin = ch_a.output_to(pins.gpio26); // move pin into PWM function
-    let mut buzzer = Buzzer::new(ch_a, 500); // 50% duty for 1kHz square wave (TOP 999)
+    let mut buzzer = Buzzer::new(ch_a, 500);
     buzzer.off();
+    let mut buzzer_ctl = BuzzerController::new();
     let mut loop_counter: u32 = 0; // global loop count for pattern timing
     let loops_per_second = (1_000_000 / constants::MAIN_LOOP_DELAY_US) as u32; // approx
     let mut next_demo_event = loops_per_second * 2; // start arm after ~2s
@@ -156,33 +161,19 @@ fn main() -> ! {
             // For "very basic test" make it on/off every status print (~1s). Accumulate using tone_on.
         }
 
-        // Demo pattern sequencing (replace with real trigger logic as needed)
+        // Demo pattern sequencing now via middleware controller
         if loop_counter == next_demo_event {
             match demo_phase {
-                0 => { // start 5s arm sequence
-                     buzzer.start_arm(loop_counter, loops_per_second, 5);
-                     demo_phase = 1;
-                }
-                2 => { // start ack pattern
-                    buzzer.start_ack(loop_counter, loops_per_second);
-                    demo_phase = 3;
-                }
+                0 => { buzzer_ctl.start_arm(loop_counter, loops_per_second, 5, &mut buzzer); demo_phase = 1; }
+                2 => { buzzer_ctl.start_ack(loop_counter, loops_per_second, &mut buzzer); demo_phase = 3; }
                 _ => {}
             }
         }
-
-        // Update buzzer pattern state machine
-        if buzzer.update(loop_counter) {
-            // Pattern finished
-            if demo_phase == 1 { // arm finished -> schedule ack
-                demo_phase = 2;
-                next_demo_event = loop_counter + loops_per_second; // 1s after arm end
-            } else if demo_phase == 3 { // ack finished -> stop demo
-                demo_phase = 255; // no further events
-            }
+        if buzzer_ctl.update(loop_counter, &mut buzzer) {
+            if demo_phase == 1 { demo_phase = 2; next_demo_event = loop_counter + loops_per_second; }
+            else if demo_phase == 3 { demo_phase = 255; }
         }
-
-        // Legacy manual modulation removed (handled inside pattern update)
+        rgb.update(loop_counter);
 
         // Turn tone on/off roughly every second using STATUS_PRINT_INTERVAL
         if counter % constants::STATUS_PRINT_INTERVAL == 0 {
@@ -193,14 +184,9 @@ fn main() -> ! {
         // Cycle RGB LED through extended palette every ~0.5s
         if counter % (constants::STATUS_PRINT_INTERVAL / 2) == 0 {
             let phase = (counter / (constants::STATUS_PRINT_INTERVAL / 2)) % 6;
-            match phase {
-                0 => rgb.red(),
-                1 => rgb.orange(),
-                2 => rgb.green(),
-                3 => rgb.cyan(),
-                4 => rgb.blue(),
-                _ => rgb.purple(),
-            }
+            use middleware::rgb_led_api::LedColor::*;
+            let color = match phase { 0=>Red,1=>Orange,2=>Green,3=>Cyan,4=>Blue,_=>Purple };
+            rgb.set_color(color);
         }
         
         // Print system status every 10,000 iterations (approximately 1 second)

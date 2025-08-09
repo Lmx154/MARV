@@ -120,6 +120,14 @@ where
     /// Convenience: purple (magenta alias)
     pub fn purple(&mut self) { self.set_color(Color::Purple); }
 
+    pub fn polarity(&self) -> Polarity { self.polarity }
+    pub fn r_high(&mut self) -> Result<(), R::Error> { self.r.set_high() }
+    pub fn r_low(&mut self) -> Result<(), R::Error> { self.r.set_low() }
+    pub fn g_high(&mut self) -> Result<(), G::Error> { self.g.set_high() }
+    pub fn g_low(&mut self) -> Result<(), G::Error> { self.g.set_low() }
+    pub fn b_high(&mut self) -> Result<(), B::Error> { self.b.set_high() }
+    pub fn b_low(&mut self) -> Result<(), B::Error> { self.b.set_low() }
+
     /// Internal helper to set individual channels.
     fn set(&mut self, r_on: bool, g_on: bool, b_on: bool) {
         match self.polarity {
