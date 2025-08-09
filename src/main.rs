@@ -38,7 +38,6 @@ use sensors::gps::GpsModule;
 mod drivers;
 use drivers::rgb_led::{RgbLed, Polarity};
 use drivers::buzzer::Buzzer;
-//use embedded_hal::pwm::SetDutyCycle;
 use hal::pwm::Slices;
 
 /// Tell the Boot ROM about our application
@@ -108,13 +107,17 @@ fn main() -> ! {
     pwm5.default_config();
     pwm5.set_div_int(125); // integer divider: 125MHz / 125 = 1MHz
     pwm5.set_div_frac(0);
-    pwm5.set_top(999); // 1 kHz tone
+    pwm5.set_top(999); // Revert to 1 kHz tone (1MHz tick / 1000)
     pwm5.enable();
     let mut ch_a = pwm5.channel_a; // take channel ownership
     let _buzz_pin = ch_a.output_to(pins.gpio26); // move pin into PWM function
-    let mut buzzer = Buzzer::new(ch_a, 500); // 50% duty for 1kHz square wave
+    let mut buzzer = Buzzer::new(ch_a, 500); // 50% duty for 1kHz square wave (TOP 999)
     buzzer.off();
-    
+    let mut loop_counter: u32 = 0; // global loop count for pattern timing
+    let loops_per_second = (1_000_000 / constants::MAIN_LOOP_DELAY_US) as u32; // approx
+    let mut next_demo_event = loops_per_second * 2; // start arm after ~2s
+    let mut demo_phase = 0u8; // 0 -> schedule arm, 1 -> wait complete, 2 -> schedule ack
+
     // Initialize GPS module
     let mut gps = GpsModule::new();
     
@@ -132,6 +135,7 @@ fn main() -> ! {
     
     loop {
         counter += 1;
+        loop_counter = loop_counter.wrapping_add(1);
         
         // Update system time every second (approximate)
         if counter % constants::TIME_UPDATE_INTERVAL == 0 { // Roughly every second based on iterations
@@ -152,9 +156,38 @@ fn main() -> ! {
             // For "very basic test" make it on/off every status print (~1s). Accumulate using tone_on.
         }
 
+        // Demo pattern sequencing (replace with real trigger logic as needed)
+        if loop_counter == next_demo_event {
+            match demo_phase {
+                0 => { // start 5s arm sequence
+                     buzzer.start_arm(loop_counter, loops_per_second, 5);
+                     demo_phase = 1;
+                }
+                2 => { // start ack pattern
+                    buzzer.start_ack(loop_counter, loops_per_second);
+                    demo_phase = 3;
+                }
+                _ => {}
+            }
+        }
+
+        // Update buzzer pattern state machine
+        if buzzer.update(loop_counter) {
+            // Pattern finished
+            if demo_phase == 1 { // arm finished -> schedule ack
+                demo_phase = 2;
+                next_demo_event = loop_counter + loops_per_second; // 1s after arm end
+            } else if demo_phase == 3 { // ack finished -> stop demo
+                demo_phase = 255; // no further events
+            }
+        }
+
+        // Legacy manual modulation removed (handled inside pattern update)
+
         // Turn tone on/off roughly every second using STATUS_PRINT_INTERVAL
         if counter % constants::STATUS_PRINT_INTERVAL == 0 {
-            if buzzer.toggle() { info!("Buzzer ON"); } else { info!("Buzzer OFF"); }
+            // Disable old toggle behavior to avoid interfering with patterns
+            // if buzzer.toggle() { info!("Buzzer ON"); } else { info!("Buzzer OFF"); }
         }
 
         // Cycle RGB LED through extended palette every ~0.5s
