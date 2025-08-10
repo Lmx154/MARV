@@ -10,3 +10,4 @@ pub mod ms5611;
 pub mod icm20948;
 pub mod mcp2515;
 pub mod sensor_trait;
+pub mod bmi088; // BMI088 driver (hardware SPI)

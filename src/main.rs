@@ -51,6 +51,9 @@ use drivers::lis3mdl::Lis3mdl;
 use middleware::lis3mdl_api::Lis3MdlMiddleware;
 use drivers::icm20948::Icm20948;
 use middleware::icm20948_api::Icm20948Middleware;
+use drivers::bmi088::Bmi088;
+use middleware::bmi088_api::Bmi088Middleware;
+use hal::spi::Spi;
 
 /// Tell the Boot ROM about our application
 #[link_section = ".start_block"]
@@ -159,6 +162,72 @@ fn main() -> ! {
     let mut icm = Icm20948Middleware::new(&mut icm_driver);
     let icm_ok = icm.init(&mut i2c0).is_ok();
     if icm_ok { info!("ICM20948 init OK"); } else { warn!("ICM20948 init FAIL"); }
+
+    // --- BMI088 (SPI0) Bring-up (simplified minimal path) ---
+    // Pins per PINOUT (do NOT change / swap per user wiring):
+    //   GP19 MOSI (SPI0 TX), GP16 MISO (SPI0 RX), GP18 SCK, GP17 CS_ACCEL, GP22 CS_GYRO
+    // Pre-SPI electrical test: temporarily drive GPIO16 (intended MISO) high then low to confirm we physically
+    // observe the pin toggling (helps detect miswire / short). After this we reconfigure it as SPI MISO.
+    // Allocate option holders for later assignment
+    let (mosi, miso, sck);
+    // Probe and then configure
+    let mut miso_probe = pins.gpio16.into_push_pull_output();
+    miso_probe.set_high().ok();
+    for _ in 0..50_000 { cortex_m::asm::nop(); }
+    info!("BMI088 MISO probe: drove GPIO16 HIGH (measure ~3.3V if wiring correct)");
+    miso_probe.set_low().ok();
+    for _ in 0..50_000 { cortex_m::asm::nop(); }
+    info!("BMI088 MISO probe: drove GPIO16 LOW (measure ~0V)");
+    // Convert to SPI function pins
+    let miso_pin = miso_probe.into_function::<hal::gpio::FunctionSpi>();
+    let mosi_pin = pins.gpio19.into_function::<hal::gpio::FunctionSpi>();
+    let sck_pin  = pins.gpio18.into_function::<hal::gpio::FunctionSpi>();
+    mosi = mosi_pin; miso = miso_pin; sck = sck_pin;
+    use embedded_hal::spi::SpiBus as _; // bring transfer_in_place into scope
+    let mut cs_accel = pins.gpio17.into_push_pull_output();
+    let mut cs_gyro  = pins.gpio22.into_push_pull_output();
+    cs_accel.set_high().ok();
+    cs_gyro.set_high().ok();
+    // Accel requires a defined low->high after power for SPI (shuttle board); enforce once.
+    cs_accel.set_low().ok(); for _ in 0..20_000 { cortex_m::asm::nop(); } cs_accel.set_high().ok();
+    // Create SPI0 in MODE_0 at a conservative 200 kHz.
+    use embedded_hal::spi::MODE_0;
+    let spi_freq = hal::fugit::HertzU32::from_raw(200_000);
+    let spi0 = Spi::<_, _, _, 8>::new(pac.SPI0, (mosi, miso, sck)).init(
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq(),
+        spi_freq,
+        &MODE_0,
+    );
+    // Quick raw ID probe (gyro then accel) before driver init.
+    let mut spi0 = spi0; // make mutable
+    let mut frame_g = [0x80u8, 0x00]; // gyro chip ID register | 0x80 (read)
+    cs_gyro.set_low().ok();
+    let gyro_xfer_ok = spi0.transfer_in_place(&mut frame_g).is_ok();
+    cs_gyro.set_high().ok();
+    let mut frame_a = [0x80u8, 0x00]; // accel chip ID register (same address 0x00)
+    cs_accel.set_low().ok();
+    let accel_xfer_ok = spi0.transfer_in_place(&mut frame_a).is_ok();
+    cs_accel.set_high().ok();
+    info!("BMI088 raw IDs gyro(ok={}):0x{:02X} accel(ok={}):0x{:02X}", gyro_xfer_ok, frame_g[1], accel_xfer_ok, frame_a[1]);
+    // Extra electrical diagnostics: send dummy frames with varying first byte to see if any MISO bits ever go high.
+    // If every returned second byte stays 0x00 across patterns, MISO is likely stuck low / not connected / device unpowered or not in SPI mode.
+    let test_patterns: [u8;5] = [0xFF, 0x00, 0xAA, 0x55, 0x3C];
+    for p in test_patterns {
+        let mut f = [p, 0x00];
+        cs_gyro.set_low().ok();
+        let _ = spi0.transfer_in_place(&mut f);
+        cs_gyro.set_high().ok();
+        info!("BMI088 SPI line test pattern=0x{:02X} resp=0x{:02X}", p, f[1]);
+        // small delay so a scope/LA can capture distinct bursts
+        for _ in 0..30_000 { cortex_m::asm::nop(); }
+    }
+    // (Swapped CS test removed at user request; pins are fixed.)
+    // Driver delay provider
+    struct BmiDelay; impl embedded_hal::delay::DelayNs for BmiDelay { fn delay_ns(&mut self,_:u32){} fn delay_us(&mut self,us:u32){ for _ in 0..(us*25){ cortex_m::asm::nop(); } } fn delay_ms(&mut self,ms:u32){ for _ in 0..ms { self.delay_us(1000);} } }
+    let mut bmi_driver = Bmi088::new(spi0, cs_accel, cs_gyro, BmiDelay);
+    let mut bmi = Bmi088Middleware::new(&mut bmi_driver);
+    let bmi_ok = match bmi.init() { Ok(()) => { info!("BMI088 init OK (MODE0)"); true }, Err(e) => { warn!("BMI088 init FAIL err={:?}", e); false } };
 
     // LIS3MDL on I2C0 address 0x1C
     let mut lis3_driver = Lis3mdl::new(timer_lis, drivers::lis3mdl::LIS3MDL_ADDR);
@@ -291,7 +360,10 @@ fn main() -> ! {
                     if p.d1 != 0 { baro = Some(p.d1); } else { info!("MS5611 D1=0"); }
                 } else { info!("MS5611 read error"); }
             }
-            print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, baro);
+            // BMI088 accel read
+            let mut bmi_acc: Option<[i16;3]> = None;
+            if bmi_ok { if let Ok(frame) = bmi.read() { bmi_acc = Some(frame.accel); } }
+            print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, baro, bmi_acc);
         }
         
     // Small delay to prevent excessive polling (use ICM timer now owned by driver)
@@ -309,7 +381,8 @@ fn print_system_status(
     imu_acc: Option<[i16;3]>,
     imu_gyro: Option<[i16;3]>,
     imu_mag: Option<[i16;3]>,
-    baro_raw: Option<u32>
+    baro_raw: Option<u32>,
+    bmi_acc: Option<[i16;3]>
 ) {
     // Only print GPS time and data
     let lat_whole = gps_data.latitude / 10_000_000;
@@ -324,6 +397,7 @@ fn print_system_status(
     if let Some(raw) = baro_raw { info!("MS5611: {}", raw); } else { info!("MS5611: --"); }
     if let Some(m) = mag_lis3 { info!("LIS3MDL: x={} y={} z={}", m[0], m[1], m[2]); } else { info!("LIS3MDL: --"); }
     if let Some(a) = imu_acc { if let (Some(g), Some(mg)) = (imu_gyro, imu_mag) { info!("ICM20948: Acc[{} {} {}] Gyro[{} {} {}] Mag[{} {} {}]", a[0],a[1],a[2], g[0],g[1],g[2], mg[0],mg[1],mg[2]); } else { info!("ICM20948: Acc[{} {} {}] Gyro/Mag --", a[0],a[1],a[2]); } } else { info!("ICM20948: --"); }
+    if let Some(b) = bmi_acc { info!("BMI088: {},{},{}", b[0], b[1], b[2]); } else { info!("BMI088: --"); }
 }
 
 /// Program metadata for `picotool info`
