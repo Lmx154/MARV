@@ -3,6 +3,8 @@
 //! This module defines all hardware pin configurations and provides a unified
 //! interface for accessing hardware resources. All pin assignments should be
 //! defined here to make hardware changes easy to manage.
+//!
+//! See `PINOUT.md` for the authoritative mapping of peripherals to GPIO pins.
 
 use rp235x_hal as hal;
 
@@ -48,9 +50,9 @@ impl Default for HardwareConfig {
             uart0_tx_pin: 0,       // GP0 - UART0 TX
             uart0_rx_pin: 1,       // GP1 - UART0 RX
             
-            // I2C pins (I2C0)
-            i2c_sda_pin: 4,        // GP4 - I2C0 SDA
-            i2c_scl_pin: 5,        // GP5 - I2C0 SCL
+            // I2C0 pins (moved to GP20/GP21 to free GP4/GP5 for UART1)
+            i2c_sda_pin: 20,       // GP20 - I2C0 SDA
+            i2c_scl_pin: 21,       // GP21 - I2C0 SCL
             
             // SPI pins (SPI0)
             spi_mosi_pin: 16,      // GP16 - SPI0 TX (MOSI)
@@ -78,8 +80,8 @@ pub static HARDWARE: HardwareConfig = HardwareConfig {
         led_pin: 25,
         uart0_tx_pin: 0,
         uart0_rx_pin: 1,
-        i2c_sda_pin: 4,
-        i2c_scl_pin: 5,
+    i2c_sda_pin: 20,
+    i2c_scl_pin: 21,
         spi_mosi_pin: 16,
         spi_miso_pin: 17,
         spi_sck_pin: 18,
@@ -129,6 +131,7 @@ impl HardwareConfig {
         self.system_clock_hz
     }
 }
+
 
 /// Pin configuration macros for easy access
 /// These macros help reduce boilerplate when configuring pins
@@ -206,26 +209,39 @@ pub mod board {
         /// UART pins
         pub const UART0_TX: u8 = 0;
         pub const UART0_RX: u8 = 1;
-        pub const UART1_TX: u8 = 8;
-        pub const UART1_RX: u8 = 9;
+        pub const UART1_TX: u8 = 4;
+        pub const UART1_RX: u8 = 5;
         
         /// I2C pins
-        pub const I2C0_SDA: u8 = 4;
-        pub const I2C0_SCL: u8 = 5;
-        pub const I2C1_SDA: u8 = 6;
-        pub const I2C1_SCL: u8 = 7;
+        pub const I2C0_SDA: u8 = 20;
+        pub const I2C0_SCL: u8 = 21;
+        pub const I2C1_SDA: u8 = 2;
+        pub const I2C1_SCL: u8 = 3;
         
         /// SPI pins
-        pub const SPI0_MOSI: u8 = 16;
-        pub const SPI0_MISO: u8 = 17;
+        pub const SPI0_MOSI: u8 = 19;
+        pub const SPI0_MISO: u8 = 16;
         pub const SPI0_SCK: u8 = 18;
-        pub const SPI0_CS: u8 = 19;
+        pub const SPI0_CS_ACCEL: u8 = 17;
+        pub const SPI0_CS_GYRO: u8 = 22;
+        pub const SPI1_SCK: u8 = 10;
+        pub const SPI1_MOSI: u8 = 11;
+        pub const SPI1_MISO: u8 = 12;
+        pub const SPI1_CS: u8 = 13;
         
-        /// ADC pins
-        pub const ADC0: u8 = 26;
-        pub const ADC1: u8 = 27;
-        pub const ADC2: u8 = 28;
-        pub const ADC3: u8 = 29; // Also connected to VSYS/3
+        /// microSD (SPI dedicated) pins
+        pub const SD_SCK: u8 = 6;
+        pub const SD_MOSI: u8 = 7;
+        pub const SD_MISO: u8 = 8;
+        pub const SD_CS: u8 = 9;
+        
+        /// RGB LED pins
+        pub const RGB_R: u8 = 14;
+        pub const RGB_G: u8 = 15;
+        pub const RGB_B: u8 = 27;
+        
+        /// Buzzer pin (PWM slice 5 channel A)
+        pub const BUZZER: u8 = 26;
     }
 }
 

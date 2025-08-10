@@ -19,8 +19,8 @@ use panic_halt as _;
 use rp235x_hal as hal;
 
 // Some things we need
-use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
+use hal::Clock;
 
 // Import defmt for debug output
 use defmt::*;
@@ -30,9 +30,10 @@ use defmt_rtt as _;
 mod hardware;
 use hardware::{HARDWARE, constants};
 
-// Import sensors module
-mod sensors;
-use sensors::gps::GpsModule;
+// GPS driver + middleware
+use drivers::gps::GpsDriver;
+use drivers::gps::GpsData;
+use middleware::gps_api::GpsApi;
 
 // Drivers
 mod drivers;
@@ -42,6 +43,13 @@ use drivers::buzzer::Buzzer;
 use middleware::buzzer_api::BuzzerController;
 use middleware::rgb_led_api::{RgbLedController, LedColor};
 use hal::pwm::Slices;
+mod tools;
+use drivers::ms5611::{Ms5611, MS5611_ADDR_ALT};
+use middleware::ms5611_api::Ms5611Middleware;
+use drivers::lis3mdl::Lis3mdl;
+use middleware::lis3mdl_api::Lis3MdlMiddleware;
+use drivers::icm20948::Icm20948;
+use middleware::icm20948_api::Icm20948Middleware;
 
 /// Tell the Boot ROM about our application
 #[link_section = ".start_block"]
@@ -74,7 +82,9 @@ fn main() -> ! {
     .unwrap();
     info!("Clocks configured successfully");
 
-    let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
+    // Timers: dedicate TIMER0 to ICM20948, TIMER1 to LIS3MDL (mirrors previously working pattern)
+    let timer_icm = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
+    let timer_lis = hal::Timer::new_timer1(pac.TIMER1, &mut pac.RESETS, &clocks);
 
     // System time tracking (simulating RTC)
     let mut system_seconds = 0u32; // Seconds since boot
@@ -95,6 +105,80 @@ fn main() -> ! {
     // Configure GPIO25 as an output for on-board LED
     let mut led_pin = pins.gpio25.into_push_pull_output();
     info!("GPIO{} (LED) configured as output", HARDWARE.led_pin());
+
+    // --- I2C SCANNER SETUP ---
+    // I2C0: SCL=GP21, SDA=GP20
+    let sda0 = pins.gpio20.into_pull_up_input().into_function::<hal::gpio::FunctionI2C>();
+    let scl0 = pins.gpio21.into_pull_up_input().into_function::<hal::gpio::FunctionI2C>();
+    let mut i2c0 = hal::i2c::I2C::i2c0(
+        pac.I2C0,
+        sda0,
+        scl0,
+        hal::fugit::HertzU32::from_raw(100_000),
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq(),
+    );
+    // I2C1: SCL=GP3, SDA=GP2
+    let sda1 = pins.gpio2.into_pull_up_input().into_function::<hal::gpio::FunctionI2C>();
+    let scl1 = pins.gpio3.into_pull_up_input().into_function::<hal::gpio::FunctionI2C>();
+    let mut i2c1 = hal::i2c::I2C::i2c1(
+        pac.I2C1,
+        sda1,
+        scl1,
+        hal::fugit::HertzU32::from_raw(100_000),
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq(),
+    );
+    // UART1 for debug output (GP4 TX, GP5 RX) to keep UART0 free for GPS
+    let tx1 = pins.gpio4.into_function::<hal::gpio::FunctionUart>();
+    let rx1 = pins.gpio5.into_function::<hal::gpio::FunctionUart>();
+    let mut uart_dbg = hal::uart::UartPeripheral::new(pac.UART1, (tx1, rx1), &mut pac.RESETS)
+        .enable(
+            hal::uart::UartConfig::new(
+                hal::fugit::HertzU32::from_raw(115_200),
+                hal::uart::DataBits::Eight,
+                None,
+                hal::uart::StopBits::One,
+            ),
+            clocks.peripheral_clock.freq(),
+        )
+        .unwrap();
+    // Scan both I2C busses at startup
+    use tools::i2cscanner::scan_i2c_bus_summary;
+    scan_i2c_bus_summary(&mut i2c1, &mut uart_dbg, "I2C1");
+    scan_i2c_bus_summary(&mut i2c0, &mut uart_dbg, "I2C0");
+
+    // --- Initialize sensors (best-effort) ---
+
+    // ICM20948 on I2C0 address 0x68
+    // Use AD0=1 address 0x69 if that's what scan showed
+    let mut icm_driver = Icm20948::new(timer_icm, drivers::icm20948::ICM20948_ADDR_AD0_HIGH);
+    let mut icm = Icm20948Middleware::new(&mut icm_driver);
+    let icm_ok = icm.init(&mut i2c0).is_ok();
+    if icm_ok { info!("ICM20948 init OK"); } else { warn!("ICM20948 init FAIL"); }
+
+    // LIS3MDL on I2C0 address 0x1C
+    let mut lis3_driver = Lis3mdl::new(timer_lis, drivers::lis3mdl::LIS3MDL_ADDR);
+    let mut lis3 = Lis3MdlMiddleware::new(&mut lis3_driver);
+    let lis3_ok = lis3.init(&mut i2c0).is_ok();
+    if lis3_ok { info!("LIS3MDL init OK"); } else { warn!("LIS3MDL init FAIL"); }
+
+    // MS5611 on I2C1 address 0x76
+    // Independent simple busy-wait delay for MS5611 (only needs ~10ms granularity)
+    struct MsDelay;
+    impl embedded_hal::delay::DelayNs for MsDelay {
+        fn delay_ns(&mut self, _ns: u32) {}
+        fn delay_us(&mut self, us: u32) { for _ in 0..(us * 8) { cortex_m::asm::nop(); } }
+        fn delay_ms(&mut self, ms: u32) { for _ in 0..ms { self.delay_us(1000); } }
+    }
+    let mut ms_delay = MsDelay;
+    // Baro physically appears on I2C0 scan at 0x77 (alt address) so use I2C0 + alt addr
+    let mut ms5611_driver = Ms5611::new(MS5611_ADDR_ALT);
+    let mut ms5611 = Ms5611Middleware::new(&mut ms5611_driver);
+    // Try init on I2C0 first (address observed there), fallback to I2C1 if fails
+    let mut ms5611_ok = ms5611.init(&mut i2c0, &mut ms_delay).is_ok();
+    if !ms5611_ok { ms5611_ok = ms5611.init(&mut i2c1, &mut ms_delay).is_ok(); }
+    if ms5611_ok { info!("MS5611 init OK"); } else { warn!("MS5611 init FAIL"); }
 
     // Configure external RGB LED pins: R=GP14, G=GP15, B=GP27
     let r_pin = pins.gpio14.into_push_pull_output();
@@ -123,16 +207,16 @@ fn main() -> ! {
     let mut next_demo_event = loops_per_second * 2; // start arm after ~2s
     let mut demo_phase = 0u8; // 0 -> schedule arm, 1 -> wait complete, 2 -> schedule ack
 
-    // Initialize GPS module
-    let mut gps = GpsModule::new();
-    
-    // Initialize GPS with UART0 on GP0 (TX) and GP1 (RX)
-    match gps.init(pac.UART0, pins.gpio0, pins.gpio1, &mut pac.RESETS, &clocks) {
-        Ok(()) => info!("GPS module initialized successfully on GP0/GP1"),
-        Err(e) => {
-            error!("Failed to initialize GPS module: {:?}", e);
-        }
+    // Initialize GPS
+    let mut gps_driver = GpsDriver::new();
+    // Consume UART0 and pins GP0/GP1 for GPS driver (moves ownership)
+    match gps_driver.init(
+        pac.UART0, pins.gpio0, pins.gpio1, &mut pac.RESETS, &clocks
+    ) {
+        Ok(()) => info!("GPS driver initialized (UART0 GP0/GP1)"),
+        Err(_e) => { error!("GPS init failed"); }
     }
+    let mut gps_api = GpsApi::new();
     
     let mut counter = 0u32;
     
@@ -147,8 +231,8 @@ fn main() -> ! {
             system_seconds += 1;
         }
         
-        // Poll GPS for new data
-        gps.update();
+        // Update GPS middleware
+        gps_api.update(&mut gps_driver);
         
         // Blink on-board LED every 1000 iterations
         if counter % constants::LED_BLINK_INTERVAL == 0 {
@@ -189,49 +273,53 @@ fn main() -> ! {
             rgb.set_color(color);
         }
         
-        // Print system status every 10,000 iterations (approximately 1 second)
+        // Print system + sensor status every STATUS_PRINT_INTERVAL iterations (~1s)
         if counter % constants::STATUS_PRINT_INTERVAL == 0 {
-            print_system_status(system_seconds, &gps);
+            // Read sensors (non-blocking / best-effort) prior to print
+            let mut mag_line: Option<[i16;3]> = None;
+            if lis3_ok { if let Ok(m) = lis3.read(&mut i2c0) { mag_line = Some([m.x,m.y,m.z]); } }
+            let mut imu_acc: Option<[i16;3]> = None;
+            let mut imu_gyro: Option<[i16;3]> = None;
+            let mut imu_mag: Option<[i16;3]> = None;
+            if icm_ok { if let Ok(frame) = icm.read_frame(&mut i2c0) { imu_acc=Some(frame.accel); imu_gyro=Some(frame.gyro); imu_mag=Some(frame.mag);} }
+            let mut baro: Option<u32> = None;
+            if ms5611_ok { 
+                if let Ok(p) = ms5611.read_pressure(&mut i2c0, &mut ms_delay) { 
+                    if p.d1 != 0 { baro=Some(p.d1); }
+                }
+            }
+            print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, baro);
         }
         
-        // Small delay to prevent excessive polling
-        timer.delay_us(constants::MAIN_LOOP_DELAY_US);
+    // Small delay to prevent excessive polling (use ICM timer now owned by driver)
+    // Simple loop delay (~ coarse) to pace main loop
+    for _ in 0..(constants::MAIN_LOOP_DELAY_US * 8) { cortex_m::asm::nop(); }
     }
 }
 
 /// Print system status including GPS information
-/// Format: "SYS RTC: MM/DD/YYYY, HH:MM:SS GPS: MM/DD/YYYY, HH:MM:SS, LAT, LONG, ALT, SATS, FIX"
-fn print_system_status(system_seconds: u32, gps: &GpsModule) {
-    // Calculate RTC time from system seconds (starting from boot time)
-    // Base time: July 6, 2025, 14:30:00
-    let base_hour = 14;
-    let base_minute = 30;
-    let base_second = 0;
-    
-    let total_seconds = base_second + (base_minute * 60) + (base_hour * 3600) + system_seconds;
-    let rtc_hour = (total_seconds / 3600) % 24;
-    let rtc_minute = (total_seconds / 60) % 60;
-    let rtc_second = total_seconds % 60;
-    
-    let rtc_month = 7;
-    let rtc_day = 6;
-    let rtc_year = 2025;
-    
-    let gps_data = gps.get_last_data();
-    
-    // Format GPS coordinates in human-readable format
+/// Format: "GPS: MM/DD/YYYY, HH:MM:SS, LAT, LONG, ALT, SATS, FIX"
+fn print_system_status(
+    _system_seconds: u32,
+    gps_data: &GpsData,
+    mag_lis3: Option<[i16;3]>,
+    imu_acc: Option<[i16;3]>,
+    imu_gyro: Option<[i16;3]>,
+    imu_mag: Option<[i16;3]>,
+    baro_raw: Option<u32>
+) {
+    // Only print GPS time and data
     let lat_whole = gps_data.latitude / 10_000_000;
     let lat_frac = (gps_data.latitude % 10_000_000).abs();
     let lon_whole = gps_data.longitude / 10_000_000;
     let lon_frac = (gps_data.longitude % 10_000_000).abs();
-    let alt_m = gps_data.altitude / 1000; // Convert mm to meters
-    
-    info!(
-        "SYS RTC: {:02}/{:02}/{:04}, {:02}:{:02}:{:02} GPS: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}°, {}.{:07}°, {}m, {} sats, fix:{}", 
-        rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second,
+    let alt_m = gps_data.altitude / 1000;
+    info!("GPS: {:02}/{:02}/{:04} {:02}:{:02}:{:02} lat {}.{:07} lon {}.{:07} alt {}m sats {} fix {}",
         gps_data.month, gps_data.day, gps_data.year, gps_data.hour, gps_data.minute, gps_data.second,
-        lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type
-    );
+        lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type);
+    if let Some(raw) = baro_raw { info!("MS5611: D1={} (raw pressure ADC)", raw); } else { info!("MS5611: --"); }
+    if let Some(m) = mag_lis3 { info!("LIS3MDL: x={} y={} z={}", m[0], m[1], m[2]); } else { info!("LIS3MDL: --"); }
+    if let Some(a) = imu_acc { if let (Some(g), Some(mg)) = (imu_gyro, imu_mag) { info!("ICM20948: Acc[{} {} {}] Gyro[{} {} {}] Mag[{} {} {}]", a[0],a[1],a[2], g[0],g[1],g[2], mg[0],mg[1],mg[2]); } else { info!("ICM20948: Acc[{} {} {}] Gyro/Mag --", a[0],a[1],a[2]); } } else { info!("ICM20948: --"); }
 }
 
 /// Program metadata for `picotool info`

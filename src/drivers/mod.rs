@@ -4,3 +4,9 @@
 
 pub mod rgb_led;
 pub mod buzzer;
+pub mod gps;
+pub mod lis3mdl;
+pub mod ms5611;
+pub mod icm20948;
+pub mod mcp2515;
+pub mod sensor_trait;
