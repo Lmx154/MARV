@@ -44,7 +44,8 @@ use middleware::buzzer_api::BuzzerController;
 use middleware::rgb_led_api::{RgbLedController, LedColor};
 use hal::pwm::Slices;
 mod tools;
-use drivers::ms5611::{Ms5611, MS5611_ADDR_ALT};
+use drivers::ms5611::{Ms5611, MS5611_ADDR};
+// Delay trait used in custom MsDelay implementation
 use middleware::ms5611_api::Ms5611Middleware;
 use drivers::lis3mdl::Lis3mdl;
 use middleware::lis3mdl_api::Lis3MdlMiddleware;
@@ -116,7 +117,7 @@ fn main() -> ! {
         scl0,
         hal::fugit::HertzU32::from_raw(100_000),
         &mut pac.RESETS,
-        clocks.peripheral_clock.freq(),
+        clocks.system_clock.freq(),
     );
     // I2C1: SCL=GP3, SDA=GP2
     let sda1 = pins.gpio2.into_pull_up_input().into_function::<hal::gpio::FunctionI2C>();
@@ -127,7 +128,7 @@ fn main() -> ! {
         scl1,
         hal::fugit::HertzU32::from_raw(100_000),
         &mut pac.RESETS,
-        clocks.peripheral_clock.freq(),
+        clocks.system_clock.freq(),
     );
     // UART1 for debug output (GP4 TX, GP5 RX) to keep UART0 free for GPS
     let tx1 = pins.gpio4.into_function::<hal::gpio::FunctionUart>();
@@ -147,6 +148,8 @@ fn main() -> ! {
     use tools::i2cscanner::scan_i2c_bus_summary;
     scan_i2c_bus_summary(&mut i2c1, &mut uart_dbg, "I2C1");
     scan_i2c_bus_summary(&mut i2c0, &mut uart_dbg, "I2C0");
+    // Short settle delay after scanning before sensor init (coarse busy-wait ~ few hundred microseconds)
+    for _ in 0..10_000 { cortex_m::asm::nop(); }
 
     // --- Initialize sensors (best-effort) ---
 
@@ -163,22 +166,22 @@ fn main() -> ! {
     let lis3_ok = lis3.init(&mut i2c0).is_ok();
     if lis3_ok { info!("LIS3MDL init OK"); } else { warn!("LIS3MDL init FAIL"); }
 
-    // MS5611 on I2C1 address 0x76
-    // Independent simple busy-wait delay for MS5611 (only needs ~10ms granularity)
-    struct MsDelay;
-    impl embedded_hal::delay::DelayNs for MsDelay {
+    // MS5611 on I2C1 address 0x76 (explicit per your wiring)
+    let mut ms5611_driver = Ms5611::new(MS5611_ADDR);
+    let mut ms5611 = Ms5611Middleware::new(&mut ms5611_driver);
+    struct BaroDelay;
+    impl embedded_hal::delay::DelayNs for BaroDelay {
         fn delay_ns(&mut self, _ns: u32) {}
-        fn delay_us(&mut self, us: u32) { for _ in 0..(us * 8) { cortex_m::asm::nop(); } }
+        fn delay_us(&mut self, us: u32) { for _ in 0..(us * 25) { cortex_m::asm::nop(); } }
         fn delay_ms(&mut self, ms: u32) { for _ in 0..ms { self.delay_us(1000); } }
     }
-    let mut ms_delay = MsDelay;
-    // Baro physically appears on I2C0 scan at 0x77 (alt address) so use I2C0 + alt addr
-    let mut ms5611_driver = Ms5611::new(MS5611_ADDR_ALT);
-    let mut ms5611 = Ms5611Middleware::new(&mut ms5611_driver);
-    // Try init on I2C0 first (address observed there), fallback to I2C1 if fails
-    let mut ms5611_ok = ms5611.init(&mut i2c0, &mut ms_delay).is_ok();
-    if !ms5611_ok { ms5611_ok = ms5611.init(&mut i2c1, &mut ms_delay).is_ok(); }
-    if ms5611_ok { info!("MS5611 init OK"); } else { warn!("MS5611 init FAIL"); }
+    let mut baro_delay = BaroDelay;
+    let ms5611_ok = ms5611.init(&mut i2c1, &mut baro_delay).is_ok();
+    if ms5611_ok {
+        if let Ok(c1) = ms5611.read_prom(&mut i2c1, 0) { info!("MS5611 C1={=u16}", c1); }
+        if let Ok(c2) = ms5611.read_prom(&mut i2c1, 1) { info!("MS5611 C2={=u16}", c2); }
+        info!("MS5611 init OK (0x76 I2C1)");
+    } else { warn!("MS5611 init FAIL (0x76 I2C1)"); }
 
     // Configure external RGB LED pins: R=GP14, G=GP15, B=GP27
     let r_pin = pins.gpio14.into_push_pull_output();
@@ -283,10 +286,10 @@ fn main() -> ! {
             let mut imu_mag: Option<[i16;3]> = None;
             if icm_ok { if let Ok(frame) = icm.read_frame(&mut i2c0) { imu_acc=Some(frame.accel); imu_gyro=Some(frame.gyro); imu_mag=Some(frame.mag);} }
             let mut baro: Option<u32> = None;
-            if ms5611_ok { 
-                if let Ok(p) = ms5611.read_pressure(&mut i2c0, &mut ms_delay) { 
-                    if p.d1 != 0 { baro=Some(p.d1); }
-                }
+            if ms5611_ok {
+                if let Ok(p) = ms5611.read_pressure(&mut i2c1, &mut baro_delay) {
+                    if p.d1 != 0 { baro = Some(p.d1); } else { info!("MS5611 D1=0"); }
+                } else { info!("MS5611 read error"); }
             }
             print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, baro);
         }
@@ -317,7 +320,8 @@ fn print_system_status(
     info!("GPS: {:02}/{:02}/{:04} {:02}:{:02}:{:02} lat {}.{:07} lon {}.{:07} alt {}m sats {} fix {}",
         gps_data.month, gps_data.day, gps_data.year, gps_data.hour, gps_data.minute, gps_data.second,
         lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type);
-    if let Some(raw) = baro_raw { info!("MS5611: D1={} (raw pressure ADC)", raw); } else { info!("MS5611: --"); }
+    // Show a simple presence marker instead of a blank line now that raw D1 is hidden
+    if let Some(raw) = baro_raw { info!("MS5611: {}", raw); } else { info!("MS5611: --"); }
     if let Some(m) = mag_lis3 { info!("LIS3MDL: x={} y={} z={}", m[0], m[1], m[2]); } else { info!("LIS3MDL: --"); }
     if let Some(a) = imu_acc { if let (Some(g), Some(mg)) = (imu_gyro, imu_mag) { info!("ICM20948: Acc[{} {} {}] Gyro[{} {} {}] Mag[{} {} {}]", a[0],a[1],a[2], g[0],g[1],g[2], mg[0],mg[1],mg[2]); } else { info!("ICM20948: Acc[{} {} {}] Gyro/Mag --", a[0],a[1],a[2]); } } else { info!("ICM20948: --"); }
 }

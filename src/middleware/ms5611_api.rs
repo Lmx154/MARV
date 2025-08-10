@@ -27,4 +27,14 @@ impl<'d> Ms5611Middleware<'d> {
         let d1 = self.driver.read_raw_pressure(i2c, delay)?;
         Ok(PressureRaw { d1 })
     }
+
+    pub fn read_prom<I2C: I2c, E>(&mut self, i2c: &mut I2C, index: u8) -> Result<u16, Ms5611Error>
+    where I2C: I2c<Error = E> {
+        self.driver.read_prom(i2c, index).map_err(|_| Ms5611Error::ReadFailed)
+    }
+
+    pub fn read_raw_pressure_direct<I2C: I2c, D: DelayNs, E>(&mut self, i2c: &mut I2C, delay: &mut D) -> Result<u32, Ms5611Error>
+    where I2C: I2c<Error = E> {
+        self.driver.read_raw_pressure(i2c, delay).map_err(|_| Ms5611Error::ReadFailed)
+    }
 }

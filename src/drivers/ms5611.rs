@@ -75,4 +75,16 @@ impl Ms5611 {
         let d1 = ((buffer[0] as u32) << 16) | ((buffer[1] as u32) << 8) | (buffer[2] as u32);
         Ok(d1)
     }
+
+    /// Read a 16-bit calibration PROM coefficient (index 0..6 maps to addresses 0xA2..0xAE)
+    pub fn read_prom<I2C, E>(&mut self, i2c: &mut I2C, index: u8) -> Result<u16, Error>
+    where
+        I2C: I2c<Error = E>,
+    {
+        if index > 6 { return Err(Error::ReadFailed); }
+        let addr = 0xA2 + (index * 2);
+        let mut buf = [0u8; 2];
+        i2c.write_read(self.address, &[addr], &mut buf).map_err(|_| Error::ReadFailed)?;
+        Ok(u16::from_be_bytes(buf))
+    }
 }

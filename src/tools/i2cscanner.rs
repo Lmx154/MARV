@@ -25,11 +25,25 @@ pub fn scan_i2c_bus_summary<W: Write, I: I2c>(i2c: &mut I, uart: &mut W, bus_nam
     let mut _errors: u16 = 0; // reserved for future diagnostic reporting
     for addr in 0x08..=0x77 {
         let mut present=false;
-    match i2c.write(addr,&[]) { Ok(_)=>{present=true;} Err(_)=>{ _errors+=1; } }
+        match i2c.write(addr,&[]) { Ok(_)=>{present=true;} Err(_)=>{ _errors+=1; } }
         if !present { let mut b=[0u8;1]; if i2c.read(addr,&mut b).is_ok() { present=true; } }
         if present && (count as usize) < found.len() {
             found[count as usize] = addr;
             count += 1;
+        }
+    }
+
+    // Targeted MS5611 probe (0x76) only on I2C1 where it's expected; avoid touching other buses.
+    if bus_name == "I2C1" {
+        const MS5611_ADDR: u8 = 0x76;
+        let already = (0..count).any(|i| found[i as usize] == MS5611_ADDR);
+        if !already {
+            if i2c.write(MS5611_ADDR, &[0x1E]).is_ok() { // RESET command
+                if (count as usize) < found.len() {
+                    found[count as usize] = MS5611_ADDR;
+                    count += 1;
+                }
+            }
         }
     }
 
