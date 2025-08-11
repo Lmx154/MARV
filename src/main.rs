@@ -363,10 +363,10 @@ fn main() -> ! {
             let mut imu_gyro: Option<[i16;3]> = None;
             let mut imu_mag: Option<[i16;3]> = None;
             if icm_ok { if let Ok(frame) = icm.read_frame(&mut i2c0) { imu_acc=Some(frame.accel); imu_gyro=Some(frame.gyro); imu_mag=Some(frame.mag);} }
-            let mut baro: Option<u32> = None;
+            let mut ms5611_line: Option<(u32,u32)> = None;
             if ms5611_ok {
-                if let Ok(p) = ms5611.read_pressure(&mut i2c1, &mut baro_delay) {
-                    if p.d1 != 0 { baro = Some(p.d1); } else { info!("MS5611 D1=0"); }
+                if let Ok(raw) = ms5611.read(&mut i2c1, &mut baro_delay) {
+                    if raw.pressure != 0 { ms5611_line = Some((raw.pressure, raw.temperature)); } else { info!("MS5611 pressure=0"); }
                 } else { info!("MS5611 read error"); }
             }
             let mut dps_line: Option<(i32,i32)> = None;
@@ -375,7 +375,7 @@ fn main() -> ! {
             let mut bmi_acc: Option<[i16;3]> = None;
             let mut bmi_gyro: Option<[i16;3]> = None;
             if bmi_ok { if let Ok(frame) = bmi.read() { bmi_acc = Some(frame.accel); bmi_gyro = Some(frame.gyro);} }
-            print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, baro, dps_line, bmi_acc, bmi_gyro);
+            print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, ms5611_line, dps_line, bmi_acc, bmi_gyro);
         }
         
     // Small delay to prevent excessive polling (use ICM timer now owned by driver)
@@ -393,7 +393,7 @@ fn print_system_status(
     imu_acc: Option<[i16;3]>,
     imu_gyro: Option<[i16;3]>,
     imu_mag: Option<[i16;3]>,
-    baro_raw: Option<u32>,
+    ms5611_raw: Option<(u32,u32)>,
     dps_raw: Option<(i32,i32)>,
     bmi_acc: Option<[i16;3]>,
     bmi_gyro: Option<[i16;3]>,
@@ -408,7 +408,7 @@ fn print_system_status(
         gps_data.month, gps_data.day, gps_data.year, gps_data.hour, gps_data.minute, gps_data.second,
         lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type);
     // Show a simple presence marker instead of a blank line now that raw D1 is hidden
-    if let Some(raw) = baro_raw { info!("MS5611: {}", raw); } else { info!("MS5611: --"); }
+    if let Some((p,t)) = ms5611_raw { info!("MS5611: Press[{}] Temp[{}]", p, t); } else { info!("MS5611: --"); }
     if let Some((p,t)) = dps_raw { info!("DPS310: Press[{}] Temp[{}]", p, t); } else { info!("DPS310: --"); }
     if let Some(m) = mag_lis3 { info!("LIS3MDL: x={} y={} z={}", m[0], m[1], m[2]); } else { info!("LIS3MDL: --"); }
     if let Some(a) = imu_acc { if let (Some(g), Some(mg)) = (imu_gyro, imu_mag) { info!("ICM20948: Acc[{} {} {}] Gyro[{} {} {}] Mag[{} {} {}]", a[0],a[1],a[2], g[0],g[1],g[2], mg[0],mg[1],mg[2]); } else { info!("ICM20948: Acc[{} {} {}] Gyro/Mag --", a[0],a[1],a[2]); } } else { info!("ICM20948: --"); }

@@ -1,17 +1,22 @@
-//! MS5611 Barometric Pressure Sensor Driver
+//! MS5611 Barometric Pressure & Temperature Sensor Driver
 //!
-//! This driver provides raw ADC value for pressure from the MS5611 sensor.
+//! Minimal raw driver exposing 24‑bit ADC conversions for pressure (D1) and
+//! temperature (D2) using OSR=4096. No compensation / scaling math is applied;
+//! higher‐level middleware may later parse PROM coefficients and compute real
+//! engineering units. For now we only return the raw unsigned 24‑bit values.
+//!
 //! Based on the MS5611-01BA03 datasheet:
 //! - I2C address: 0x76 (CSB high) or 0x77 (CSB low)
-//! - Initialization: Reset the device.
-//! - Raw pressure: Issue conversion command for D1 (pressure), delay, read 24-bit ADC value.
-//! - Uses OSR=4096 for high resolution (conversion time ~9ms).
-//! - Methods take &mut delay since no dedicated timer available.
+//! - Reset: send 0x1E then wait >2.8ms
+//! - Start D1 conversion: 0x40 | OSR (we use 0x48 for OSR=4096)
+//! - Start D2 conversion: 0x50 | OSR (we use 0x58 for OSR=4096)
+//! - Conversion time OSR=4096 ~9.04ms (we wait 10ms for safety)
+//! - Read ADC: command 0x00 returns 24‑bit big‑endian result
 //!
 //! Usage Notes:
 //! - Connected to I2C1 (GP2 SDA, GP3 SCL).
-//! - Append to UART output as "; BARO: x" where x is the raw pressure ADC (D1).
-//! - Does not compute compensated pressure; only raw ADC for simplicity.
+//! - Printing follows: "MS5611: Press[<raw>] Temp[<raw>]" to mirror DPS310 style.
+//! - Only raw values: they are NOT compensated or scaled.
 
 use embedded_hal::i2c::I2c;
 use embedded_hal::delay::DelayNs;
@@ -23,6 +28,7 @@ pub const MS5611_ADDR_ALT: u8 = 0x77; // Alternate (CSB low)
 pub mod commands {
     pub const RESET: u8 = 0x1E;
     pub const CONVERT_D1_OSR4096: u8 = 0x48; // Pressure conversion, OSR=4096
+    pub const CONVERT_D2_OSR4096: u8 = 0x58; // Temperature conversion, OSR=4096
     pub const ADC_READ: u8 = 0x00;
 }
 
@@ -74,6 +80,31 @@ impl Ms5611 {
 
         let d1 = ((buffer[0] as u32) << 16) | ((buffer[1] as u32) << 8) | (buffer[2] as u32);
         Ok(d1)
+    }
+
+    /// Read raw temperature ADC value (D2)
+    pub fn read_raw_temperature<I2C, DELAY, E>(&mut self, i2c: &mut I2C, delay: &mut DELAY) -> Result<u32, Error>
+    where
+        I2C: I2c<Error = E>,
+        DELAY: DelayNs,
+    {
+        i2c.write(self.address, &[commands::CONVERT_D2_OSR4096]).map_err(|_| Error::WriteFailed)?;
+        delay.delay_ms(10u32);
+        let mut buffer = [0u8; 3];
+        i2c.write_read(self.address, &[commands::ADC_READ], &mut buffer).map_err(|_| Error::ReadFailed)?;
+        let d2 = ((buffer[0] as u32) << 16) | ((buffer[1] as u32) << 8) | (buffer[2] as u32);
+        Ok(d2)
+    }
+
+    /// Convenience: read pressure then temperature sequentially (blocking ~20ms)
+    pub fn read_raw_both<I2C, DELAY, E>(&mut self, i2c: &mut I2C, delay: &mut DELAY) -> Result<(u32,u32), Error>
+    where
+        I2C: I2c<Error = E>,
+        DELAY: DelayNs,
+    {
+        let p = self.read_raw_pressure(i2c, delay)?;
+        let t = self.read_raw_temperature(i2c, delay)?;
+        Ok((p,t))
     }
 
     /// Read a 16-bit calibration PROM coefficient (index 0..6 maps to addresses 0xA2..0xAE)
