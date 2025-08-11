@@ -362,8 +362,9 @@ fn main() -> ! {
             }
             // BMI088 accel read
             let mut bmi_acc: Option<[i16;3]> = None;
-            if bmi_ok { if let Ok(frame) = bmi.read() { bmi_acc = Some(frame.accel); } }
-            print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, baro, bmi_acc);
+            let mut bmi_gyro: Option<[i16;3]> = None;
+            if bmi_ok { if let Ok(frame) = bmi.read() { bmi_acc = Some(frame.accel); bmi_gyro = Some(frame.gyro);} }
+            print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, baro, bmi_acc, bmi_gyro);
         }
         
     // Small delay to prevent excessive polling (use ICM timer now owned by driver)
@@ -382,7 +383,8 @@ fn print_system_status(
     imu_gyro: Option<[i16;3]>,
     imu_mag: Option<[i16;3]>,
     baro_raw: Option<u32>,
-    bmi_acc: Option<[i16;3]>
+    bmi_acc: Option<[i16;3]>,
+    bmi_gyro: Option<[i16;3]>,
 ) {
     // Only print GPS time and data
     let lat_whole = gps_data.latitude / 10_000_000;
@@ -397,7 +399,8 @@ fn print_system_status(
     if let Some(raw) = baro_raw { info!("MS5611: {}", raw); } else { info!("MS5611: --"); }
     if let Some(m) = mag_lis3 { info!("LIS3MDL: x={} y={} z={}", m[0], m[1], m[2]); } else { info!("LIS3MDL: --"); }
     if let Some(a) = imu_acc { if let (Some(g), Some(mg)) = (imu_gyro, imu_mag) { info!("ICM20948: Acc[{} {} {}] Gyro[{} {} {}] Mag[{} {} {}]", a[0],a[1],a[2], g[0],g[1],g[2], mg[0],mg[1],mg[2]); } else { info!("ICM20948: Acc[{} {} {}] Gyro/Mag --", a[0],a[1],a[2]); } } else { info!("ICM20948: --"); }
-    if let Some(b) = bmi_acc { info!("BMI088: {},{},{}", b[0], b[1], b[2]); } else { info!("BMI088: --"); }
+    if let Some(a) = bmi_acc { info!("BMI088 Acc: {},{},{}", a[0], a[1], a[2]); } else { info!("BMI088 Acc: --"); }
+    if let Some(g) = bmi_gyro { info!("BMI088 Gyro: {},{},{}", g[0], g[1], g[2]); } else { info!("BMI088 Gyro: --"); }
 }
 
 /// Program metadata for `picotool info`

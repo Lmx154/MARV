@@ -1,7 +1,6 @@
 //! Middleware wrapper for BMI088 providing a simplified frame read interface.
 //!
-//! Currently only exposes raw accelerometer axes (x,y,z). Gyro path reserved
-//! for later expansion. Data is returned as plain i16 counts matching driver.
+//! Exposes raw accelerometer and gyroscope readings as plain i16 counts.
 
 use crate::drivers::bmi088::{Bmi088, Bmi088Raw, Error as BmiError};
 use embedded_hal::spi::SpiBus;
@@ -28,4 +27,6 @@ where
     pub fn init(&mut self) -> Result<(), BmiError> { self.driver.init() }
 
     pub fn read(&mut self) -> Result<Bmi088Raw, BmiError> { self.driver.read_raw() }
+    pub fn read_accel(&mut self) -> Result<[i16;3], BmiError> { self.driver.read_accel() }
+    pub fn read_gyro(&mut self) -> Result<[i16;3], BmiError> { self.driver.read_gyro() }
 }

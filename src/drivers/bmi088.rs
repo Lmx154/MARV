@@ -72,11 +72,11 @@ impl Format for Error {
         }
     }
 }
-/// Raw accelerometer + (future) gyro frame
+/// Raw accelerometer + gyro frame
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Bmi088Raw {
     pub accel: [i16; 3],
-    pub gyro: [i16; 3], // presently zeroed (not yet read by middleware)
+    pub gyro: [i16; 3],
 }
 /// BMI088 driver over a shared SPI bus with two CS lines
 pub struct Bmi088<BUS, CSACC, CSGYR, DELAY>
@@ -208,10 +208,24 @@ where
     let z = i16::from_le_bytes([buf[6], buf[7]]);
         Ok([x,y,z])
     }
-    /// Combined read (future expansion) currently returns accel + zero gyro.
+    /// Combined read of accel + gyro (gyro best-effort; if it fails returns zeros)
     pub fn read_raw(&mut self) -> Result<Bmi088Raw, Error> {
         let accel = self.read_accel()?;
-        Ok(Bmi088Raw { accel, gyro: [0;3] })
+        let gyro = self.read_gyro().unwrap_or([0;3]);
+        Ok(Bmi088Raw { accel, gyro })
+    }
+
+    /// Read gyro burst (X_L .. Z_H). Returns raw i16 counts.
+    pub fn read_gyro(&mut self) -> Result<[i16;3], Error> {
+        let mut buf = [0u8; 7]; // addr + 6 data bytes
+        buf[0] = gyr::RATE_X_L | 0x80;
+        self.cs_gyro.set_low().map_err(|_| Error::Cs)?;
+        if self.bus.transfer_in_place(&mut buf).is_err() { self.cs_gyro.set_high().ok(); return Err(Error::Bus); }
+        self.cs_gyro.set_high().map_err(|_| Error::Cs)?;
+        let x = i16::from_le_bytes([buf[1], buf[2]]);
+        let y = i16::from_le_bytes([buf[3], buf[4]]);
+        let z = i16::from_le_bytes([buf[5], buf[6]]);
+        Ok([x,y,z])
     }
     fn read_acc(&mut self, reg: u8) -> Result<u8, Error> {
     // BMI088 accelerometer requires dummy byte after register address
