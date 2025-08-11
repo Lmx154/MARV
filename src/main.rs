@@ -47,6 +47,8 @@ mod tools;
 use drivers::ms5611::{Ms5611, MS5611_ADDR};
 // Delay trait used in custom MsDelay implementation
 use middleware::ms5611_api::Ms5611Middleware;
+use drivers::dps310::{Dps310, DPS310_ADDR};
+use middleware::dps310_api::Dps310Middleware;
 use drivers::lis3mdl::Lis3mdl;
 use middleware::lis3mdl_api::Lis3MdlMiddleware;
 use drivers::icm20948::Icm20948;
@@ -235,6 +237,13 @@ fn main() -> ! {
     let lis3_ok = lis3.init(&mut i2c0).is_ok();
     if lis3_ok { info!("LIS3MDL init OK"); } else { warn!("LIS3MDL init FAIL"); }
 
+    // DPS310 on I2C0 address 0x77
+    let mut dps310_driver = Dps310::new(DPS310_ADDR);
+    struct DpsDelay; impl embedded_hal::delay::DelayNs for DpsDelay { fn delay_ns(&mut self,_:u32){} fn delay_us(&mut self,us:u32){ for _ in 0..(us*25){ cortex_m::asm::nop(); } } fn delay_ms(&mut self,ms:u32){ for _ in 0..ms { self.delay_us(1000);} } }
+    let mut dps_delay = DpsDelay;
+    let mut dps = Dps310Middleware::new(&mut dps310_driver);
+    let dps_ok = match dps.init(&mut i2c0, &mut dps_delay) { Ok(()) => { info!("DPS310 init OK (0x77 I2C0)"); true }, Err(e) => { warn!("DPS310 init FAIL err={:?}", e); false } };
+
     // MS5611 on I2C1 address 0x76 (explicit per your wiring)
     let mut ms5611_driver = Ms5611::new(MS5611_ADDR);
     let mut ms5611 = Ms5611Middleware::new(&mut ms5611_driver);
@@ -360,11 +369,13 @@ fn main() -> ! {
                     if p.d1 != 0 { baro = Some(p.d1); } else { info!("MS5611 D1=0"); }
                 } else { info!("MS5611 read error"); }
             }
+            let mut dps_line: Option<(i32,i32)> = None;
+            if dps_ok { if let Ok(raw) = dps.read(&mut i2c0) { dps_line = Some((raw.pressure, raw.temperature)); } }
             // BMI088 accel read
             let mut bmi_acc: Option<[i16;3]> = None;
             let mut bmi_gyro: Option<[i16;3]> = None;
             if bmi_ok { if let Ok(frame) = bmi.read() { bmi_acc = Some(frame.accel); bmi_gyro = Some(frame.gyro);} }
-            print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, baro, bmi_acc, bmi_gyro);
+            print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, baro, dps_line, bmi_acc, bmi_gyro);
         }
         
     // Small delay to prevent excessive polling (use ICM timer now owned by driver)
@@ -383,6 +394,7 @@ fn print_system_status(
     imu_gyro: Option<[i16;3]>,
     imu_mag: Option<[i16;3]>,
     baro_raw: Option<u32>,
+    dps_raw: Option<(i32,i32)>,
     bmi_acc: Option<[i16;3]>,
     bmi_gyro: Option<[i16;3]>,
 ) {
@@ -397,10 +409,15 @@ fn print_system_status(
         lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type);
     // Show a simple presence marker instead of a blank line now that raw D1 is hidden
     if let Some(raw) = baro_raw { info!("MS5611: {}", raw); } else { info!("MS5611: --"); }
+    if let Some((p,t)) = dps_raw { info!("DPS310: Press[{}] Temp[{}]", p, t); } else { info!("DPS310: --"); }
     if let Some(m) = mag_lis3 { info!("LIS3MDL: x={} y={} z={}", m[0], m[1], m[2]); } else { info!("LIS3MDL: --"); }
     if let Some(a) = imu_acc { if let (Some(g), Some(mg)) = (imu_gyro, imu_mag) { info!("ICM20948: Acc[{} {} {}] Gyro[{} {} {}] Mag[{} {} {}]", a[0],a[1],a[2], g[0],g[1],g[2], mg[0],mg[1],mg[2]); } else { info!("ICM20948: Acc[{} {} {}] Gyro/Mag --", a[0],a[1],a[2]); } } else { info!("ICM20948: --"); }
-    if let Some(a) = bmi_acc { info!("BMI088 Acc: {},{},{}", a[0], a[1], a[2]); } else { info!("BMI088 Acc: --"); }
-    if let Some(g) = bmi_gyro { info!("BMI088 Gyro: {},{},{}", g[0], g[1], g[2]); } else { info!("BMI088 Gyro: --"); }
+    match (bmi_acc, bmi_gyro) {
+        (Some(a), Some(g)) => info!("BMI088: Acc[{} {} {}] Gyro[{} {} {}]", a[0], a[1], a[2], g[0], g[1], g[2]),
+        (Some(a), None)    => info!("BMI088: Acc[{} {} {}] Gyro[-- -- --]", a[0], a[1], a[2]),
+        (None, Some(g))    => info!("BMI088: Acc[-- -- --] Gyro[{} {} {}]", g[0], g[1], g[2]),
+        (None, None)       => info!("BMI088: --"),
+    }
 }
 
 /// Program metadata for `picotool info`
