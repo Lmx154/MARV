@@ -20,6 +20,10 @@ panic-halt = "0.2.0"
 heapless = "0.8"
 rp235x-hal = { version = "0.3.0", features = ["binary-info", "critical-section-impl", "rt", "defmt"] }
 
+[features]
+default = ["bmi088"]
+bmi088 = []
+
 [profile.dev]
 debug = 2
 lto = false

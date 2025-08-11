@@ -1,60 +1,40 @@
-//! # Basic Raspberry Pi Pico 2 Example
+//! Raspberry Pi Pico 2 Example (optional BMI088)
 //!
-//! This application demonstrates basic functionality on the RP2350
-//! including LED blinking and system time tracking.
-//!
-//! ## Status:
-//! - ✅ no_std embedded environment
-//! - ✅ Basic LED blinking functionality
-//! - ✅ System time tracking
-
+//! Preserves working RTT setup while allowing BMI088 via feature flag.
 #![no_std]
 #![no_main]
 
-// Pick one of these panic handlers:
-// `panic-halt` will cause the processor to halt/stop on panic.
 use panic_halt as _;
-
-// Provide an alias for our HAL crate
 use rp235x_hal as hal;
-
-// Some things we need
-use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
-
-// Import defmt for debug output
+use hal::Clock;
 use defmt::*;
 use defmt_rtt as _;
+#[cfg(feature = "bmi088")] mod drivers;
+#[cfg(feature = "bmi088")] use drivers::bmi088::Bmi088;
 
-// Import our hardware configuration
-mod hardware;
-use hardware::{HARDWARE, constants};
-
-// Import sensors module
-mod sensors;
-use sensors::gps::GpsModule;
-
-/// Tell the Boot ROM about our application
+// Boot metadata (keep layout stable for RTT)
 #[link_section = ".start_block"]
 #[used]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
+#[link_section = ".bi_entries"]
+#[used]
+pub static PICOTOOL_ENTRIES: [hal::binary_info::EntryAddr; 3] = [
+    hal::binary_info::rp_cargo_bin_name!(),
+    hal::binary_info::rp_cargo_version!(),
+    hal::binary_info::rp_program_description!(c"RustyPico Example (BMI088 opt)"),
+];
 
-/// Entry point to our bare-metal application.
 #[hal::entry]
 fn main() -> ! {
-    info!("Starting RustyPi on RP2350!");
-    info!("Hello, World! 🦀");
-    
-    // Grab our singleton objects
-    let mut pac = hal::pac::Peripherals::take().unwrap();
+    info!("Boot start (bmi088 feature: {} )", cfg!(feature = "bmi088"));
 
-    // Set up the watchdog driver - needed by the clock setup code
+    let mut pac = hal::pac::Peripherals::take().unwrap();
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
     info!("Watchdog initialized");
 
-    // Configure the clocks
     let clocks = hal::clocks::init_clocks_and_plls(
-        HARDWARE.xtal_frequency(),
+        12_000_000,
         pac.XOSC,
         pac.CLOCKS,
         pac.PLL_SYS,
@@ -65,17 +45,7 @@ fn main() -> ! {
     .unwrap();
     info!("Clocks configured successfully");
 
-    let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
-
-    // System time tracking (simulating RTC)
-    let mut system_seconds = 0u32; // Seconds since boot
-    
-    info!("System timer initialized");
-
-    // The single-cycle I/O block controls our GPIO pins
     let sio = hal::Sio::new(pac.SIO);
-
-    // Set the pins to their default state
     let pins = hal::gpio::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
@@ -83,111 +53,83 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    // Configure GPIO25 as an output for LED
+    // Configure on-board LED for blinking to confirm execution
     let mut led_pin = pins.gpio25.into_push_pull_output();
-    info!("GPIO{} (LED) configured as output", HARDWARE.led_pin());
-    
-    // Initialize GPS module
-    let mut gps = GpsModule::new();
-    
-    // Initialize GPS with UART0 on GP0 (TX) and GP1 (RX)
-    match gps.init(pac.UART0, pins.gpio0, pins.gpio1, &mut pac.RESETS, &clocks) {
-        Ok(()) => info!("GPS module initialized successfully on GP0/GP1"),
-        Err(e) => {
-            error!("Failed to initialize GPS module: {:?}", e);
-        }
+    led_pin.set_high().ok(); // Initial state
+
+    #[cfg(feature = "bmi088")] {
+        let mut ps_pin = pins.gpio5.into_push_pull_output();
+        ps_pin.set_low().ok();
+        info!("GPIO5 low (gyro PS)");
     }
-    
+
+    #[cfg(feature = "bmi088")] let mut bmi_driver_opt = {
+        use embedded_hal::spi::MODE_0;
+        let mosi = pins.gpio19.into_function::<hal::gpio::FunctionSpi>();
+        let miso = pins.gpio16.into_function::<hal::gpio::FunctionSpi>();
+        let sck = pins.gpio18.into_function::<hal::gpio::FunctionSpi>();
+        let mut cs_accel = pins.gpio17.into_push_pull_output();
+        let mut cs_gyro = pins.gpio22.into_push_pull_output();
+        cs_accel.set_high().ok();
+        cs_gyro.set_high().ok();
+        let spi_freq = hal::fugit::HertzU32::from_raw(200_000);
+        let spi = hal::spi::Spi::<_, _, _, 8>::new(pac.SPI0, (mosi, miso, sck)).init(
+            &mut pac.RESETS,
+            clocks.peripheral_clock.freq(),
+            spi_freq,
+            &MODE_0,
+        );
+        struct BmiDelay;
+        impl embedded_hal::delay::DelayNs for BmiDelay {
+            fn delay_ns(&mut self, _: u32) {}
+            fn delay_us(&mut self, us: u32) { for _ in 0..(us * 25) { cortex_m::asm::nop(); } }
+            fn delay_ms(&mut self, ms: u32) { for _ in 0..ms { self.delay_us(1000); } }
+        }
+        let delay = BmiDelay;
+        let mut drv = Bmi088::new(spi, cs_accel, cs_gyro, delay);
+        match drv.init() {
+            Ok(()) => info!("BMI088 init OK"),
+            Err(e) => warn!("BMI088 init FAIL err={:?}", e),
+        }
+        Some(drv)
+    };
+
     let mut counter = 0u32;
-    
-    info!("� System initialized, starting main loop...");
-    
+    let mut led_on = true;
+
     loop {
         counter += 1;
-        
-        // Update system time every second (approximate)
-        if counter % constants::TIME_UPDATE_INTERVAL == 0 { // Roughly every second based on iterations
-            system_seconds += 1;
+        // Blink LED to confirm loop is running
+        if counter % 1000000 == 0 {
+            if led_on { led_pin.set_low().ok(); } else { led_pin.set_high().ok(); }
+            led_on = !led_on;
+            info!("Loop tick");
         }
-        
-        // Poll GPS for new data
-        gps.update();
-        
-        // Blink LED every 1000 iterations
-        if counter % constants::LED_BLINK_INTERVAL == 0 {
-            if (counter / constants::LED_BLINK_INTERVAL) % 2 == 0 {
-                led_pin.set_high().unwrap();
-            } else {
-                led_pin.set_low().unwrap();
+
+        #[cfg(feature = "bmi088")] if let Some(drv) = &mut bmi_driver_opt {
+            if let Ok(frame) = drv.read_raw() {
+                // Raw -> approximate units (see BMI088 datasheet)
+                // Accel ±6g => 6g / 32768 ≈ 0.000183105g per LSB
+                // Gyro 2000 dps => 2000 / 32768 ≈ 0.061035 dps per LSB
+                let ax = frame.accel[0];
+                let ay = frame.accel[1];
+                let az = frame.accel[2];
+                let gx = frame.gyro[0];
+                let gy = frame.gyro[1];
+                let gz = frame.gyro[2];
+                info!("BMI088 Accel(raw): x={}, y={}, z={} | Gyro(raw): x={}, y={}, z={}", ax, ay, az, gx, gy, gz);
             }
         }
-        
-        // Print system status every 10,000 iterations (approximately 1 second)
-        if counter % constants::STATUS_PRINT_INTERVAL == 0 {
-            print_system_status(system_seconds, &gps);
-        }
-        
-        // Small delay to prevent excessive polling
-        timer.delay_us(constants::MAIN_LOOP_DELAY_US);
+        // Simple delay
+        for _ in 0..1_000_000 { cortex_m::asm::nop(); }
     }
 }
 
-/// Print system status including GPS information
-/// Format: "SYS RTC: MM/DD/YYYY, HH:MM:SS GPS: MM/DD/YYYY, HH:MM:SS, LAT, LONG, ALT, SATS, FIX"
-fn print_system_status(system_seconds: u32, gps: &GpsModule) {
-    // Calculate RTC time from system seconds (starting from boot time)
-    // Base time: July 6, 2025, 14:30:00
-    let base_hour = 14;
-    let base_minute = 30;
-    let base_second = 0;
-    
-    let total_seconds = base_second + (base_minute * 60) + (base_hour * 3600) + system_seconds;
-    let rtc_hour = (total_seconds / 3600) % 24;
-    let rtc_minute = (total_seconds / 60) % 60;
-    let rtc_second = total_seconds % 60;
-    
-    let rtc_month = 7;
-    let rtc_day = 6;
-    let rtc_year = 2025;
-    
-    let gps_data = gps.get_last_data();
-    
-    // Format GPS coordinates in human-readable format
-    let lat_whole = gps_data.latitude / 10_000_000;
-    let lat_frac = (gps_data.latitude % 10_000_000).abs();
-    let lon_whole = gps_data.longitude / 10_000_000;
-    let lon_frac = (gps_data.longitude % 10_000_000).abs();
-    let alt_m = gps_data.altitude / 1000; // Convert mm to meters
-    
-    info!(
-        "SYS RTC: {:02}/{:02}/{:04}, {:02}:{:02}:{:02} GPS: {:02}/{:02}/{:04}, {:02}:{:02}:{:02}, {}.{:07}°, {}.{:07}°, {}m, {} sats, fix:{}", 
-        rtc_month, rtc_day, rtc_year, rtc_hour, rtc_minute, rtc_second,
-        gps_data.month, gps_data.day, gps_data.year, gps_data.hour, gps_data.minute, gps_data.second,
-        lat_whole, lat_frac, lon_whole, lon_frac, alt_m, gps_data.satellites, gps_data.fix_type
-    );
-}
 
-/// Program metadata for `picotool info`
-#[link_section = ".bi_entries"]
-#[used]
-pub static PICOTOOL_ENTRIES: [hal::binary_info::EntryAddr; 5] = [
-    hal::binary_info::rp_cargo_bin_name!(),
-    hal::binary_info::rp_cargo_version!(),
-    hal::binary_info::rp_program_description!(c"RustyPico Basic Example"),
-    hal::binary_info::rp_cargo_homepage_url!(),
-    hal::binary_info::rp_program_build_attribute!(),
-];
-
-// Define a defmt timestamp (required for defmt-rtt)
 defmt::timestamp!("{=u64:us}", {
-    // Simple timestamp implementation for no_std environment
-    // In a real application, you might use a hardware timer
     static mut TIMESTAMP: u64 = 0;
-    // NOTE(unsafe) single-core, single context
     unsafe {
         TIMESTAMP += 1;
         TIMESTAMP
     }
 });
-
-// End of file
