@@ -1,2 +1,2 @@
-// fc/tools/mod.rs
+// tools/mod.rs
 pub mod i2cscanner;

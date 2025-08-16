@@ -1,9 +1,15 @@
-// fc/drivers/mod.rs
-pub mod bmi088;
+//! Drivers module
+//!
+//! Contains reusable peripheral drivers (e.g., RGB LED).
+
+pub mod rgb_led;
+pub mod buzzer;
+pub mod gps;
 pub mod lis3mdl;
-pub mod bus_managers;
-pub mod icm20948;
 pub mod ms5611;
-pub mod pcf8563;
+pub mod icm20948;
 pub mod sensor_trait;
-pub mod ublox_neom9n;
+pub mod bmi088; // BMI088 driver (hardware SPI)
+pub mod dps310; // DPS310 barometer driver
+pub mod rv8803; // RV-8803 RTC driver
+pub mod sd; // SD card over SPI1
