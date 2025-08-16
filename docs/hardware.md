@@ -7,66 +7,63 @@ This document outlines the hardware configurations and pin assignments for the M
 - **Microcontroller (MC)**: Raspberry Pi Pico 2 - RP2350A
 
 - **Sensors and Interfaces**:
-  - **RTC - PCF8563P (0x51)**: I2C
-    - SDA: GP2 (I2C1)
-    - SCL: GP3 (I2C1)
-  - **Barometer - BMP388 (0x77)**: I2C
-    - SDA: GP2 (I2C1)
-    - SCL: GP3 (I2C1)
-  - **Barometer - MS5611-01BA03 (0x76)**: I2C
-    - SDA: GP2 (I2C1)
-    - SCL: GP3 (I2C1)
-  - **SD Card Storage**: SPI (not using dedicated SPI controller)
-    - CLK: GP6
-    - MOSI: GP7
-    - MISO: GP8
-    - CS: GP9
-  - **IMU - BMI088**: SPI
-    - CS GYRO: GP20 (SPI0)
-    - MOSI: GP19 (SPI0)
-    - CLK: GP18 (SPI0)
-    - CS ACCEL: GP17 (SPI0)
-    - MISO: GP16 (SPI0)
-  - **CAN Controller - MCP2515**: SPI
-    - CLK: GP10 (SPI1)
-    - MOSI: GP11 (SPI1)
-    - MISO: GP12 (SPI1)
-    - CS: GP13 (SPI1)
-  - **Magnetometer - BMM350 (0x14)**: I2C
-    - SDA: GP20 (I2C0)
-    - SCL: GP21 (I2C0)
-  - **IMU - ICM-20948 (0x69)**: I2C
-    - SDA: GP20 (I2C0)
-    - SCL: GP21 (I2C0)
-  - **GPS - Ublox NEO-M9N**: UART
-    - TX: GP0 (UART0, FC TX to GPS RX)
-    - RX: GP1 (UART0, FC RX from GPS TX)
-  - **Debug UART (CP2102 for USB serial)**: UART
-    - TX: GP4 (FC TX to CP2102 RX)
-    - RX: GP5 (FC RX from CP2102 TX)
+  - **GPS - Ublox NEO M9N**: UART0
+    - TX: GP0 (FC TX to GPS RX)
+    - RX: GP1 (FC RX from GPS TX)
+    - Baud: 38_400 (initial)
+  - **Debug UART - CP2102**: UART1 (remapped)
+    - TX: GP8 (FC TX to CP2102 RX)
+    - RX: GP9 (FC RX from CP2102 TX)
+    - Baud: 115_200
+  - **IMU - BMI088 (dual CS)**: SPI0
+    - MOSI: GP19
+    - MISO: GP16
+    - SCK: GP18
+    - CS_ACCEL: GP17
+    - CS_GYRO: GP22
+  - **microSD Card**: SPI1
+    - MOSI: GP11
+    - MISO: GP12
+    - SCK: GP10
+    - CS: GP13
+  - **I2C0**: LIS3MDL, DPS310, ICM20948
+    - SDA: GP20
+    - SCL: GP21
+    - 100 kHz (upgradeable to 400 kHz)
+  - **I2C1**: RV-8803, MS5611
+    - SDA: GP2
+    - SCL: GP3
+  - **RGB LED (Discrete, Common Anode)**:
+    - R: GP14
+    - G: GP15
+    - B: GP27
+    - Active Low
+  - **Buzzer (Passive PWM)**:
+    - GP26 (PWM Slice 5 CH A)
+    - 1–5 kHz typical
 
-**Note**: I2C devices are split across two buses: High-frequency sensors (IMU and magnetometer) on I2C0 (GP20 SDA, GP21 SCL); lower-frequency sensors (barometer and RTC) on I2C1 (GP2 SDA, GP3 SCL).
+**Note**: This mapping is authoritative and matches the summary table in `PINOUT.md`. I2C0 is for high-frequency sensors, I2C1 for RTC and barometer. SPI0 and SPI1 are used for IMU and SD card, respectively. Debug UART is remapped from GP4/GP5 to GP8/GP9.
 
 ## Radio
 
 - **Microcontroller (MC)**: Raspberry Pi Pico 2 - RP2350A
 
 - **Sensors and Interfaces**:
-  - **LoRa Radio - E32900T30D**: UART
-    - TX: GP0 (UART0)
-    - RX: GP1 (UART0)
-  - **CAN Controller - MCP2515**: SPI
-    - MOSI: GP19 (SPI0)
-    - CLK: GP18 (SPI0)
-    - CS: GP17 (SPI0)
-    - MISO: GP16 (SPI0)
+  - **LoRa Radio - E32900T30D**: UART0
+    - TX: GP0
+    - RX: GP1
+  - **CAN Controller - MCP2515**: SPI0
+    - MOSI: GP19
+    - MISO: GP16
+    - SCK: GP18
+    - CS: GP17
 
 ## Ground Station (GS)
 
 - **Microcontroller (MC)**: Raspberry Pi Pico 2 - RP2350A
 
 - **Sensors and Interfaces**:
-  - **LoRa Radio - E32900T30D**: UART
-    - TX: GP0 (UART0)
-    - RX: GP1 (UART0)
+  - **LoRa Radio - E32900T30D**: UART0
+    - TX: GP0
+    - RX: GP1
 

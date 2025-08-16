@@ -10,9 +10,16 @@ target = "thumbv8m.main-none-eabihf"
 rustflags = [
     "-C", "link-arg=--nmagic",
     "-C", "link-arg=-Tlink.x",
+    # Required for defmt RTT symbol table so probe-rs can decode logs
+    "-C", "link-arg=-Tdefmt.x",
     "-C", "target-cpu=cortex-m33",
 ]
 
 # Use probe-rs for loading and debugging with Pico probe
-# Load an elf, skipping unchanged flash sectors, verify it, and execute it
-runner = "probe-rs run --chip RP235x"
+# Load an ELF, skipping unchanged flash sectors, verify it, and execute it.
+# Note: Newer probe-rs uses --format instead of the old --defmt flag.
+runner = "probe-rs run --chip RP2350"
+
+[env]
+# Show all logs during development; adjust per-bin if desired
+DEFMT_LOG = "debug"
