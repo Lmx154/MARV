@@ -19,6 +19,8 @@ defmt-rtt = "0.4.0"
 panic-halt = "0.2.0"
 heapless = "0.8"
 rp235x-hal = { version = "0.3.0", features = ["binary-info", "critical-section-impl", "rt", "defmt"] }
+embedded-sdmmc = { version = "0.9", default-features = false, features = ["defmt-log"] }
+embedded-hal-bus = "0.2"
 
 [profile.dev]
 debug = 2

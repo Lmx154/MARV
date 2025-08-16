@@ -171,6 +171,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-hal-bus"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d3980bf28e8577db59fe2bdb3df868a419469d2cecb363644eea2b6f7797669"
+dependencies = [
+ "critical-section",
+ "embedded-hal 1.0.0",
+ "portable-atomic",
+]
+
+[[package]]
 name = "embedded-hal-nb"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -185,6 +196,19 @@ name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
+name = "embedded-sdmmc"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce3c7f9ea039eeafc4a49597b7bd5ae3a1c8e51b2803a381cb0f29ce90fe1ec6"
+dependencies = [
+ "byteorder",
+ "defmt 0.3.100",
+ "embedded-hal 1.0.0",
+ "embedded-io",
+ "heapless",
+]
 
 [[package]]
 name = "frunk"
@@ -502,7 +526,9 @@ dependencies = [
  "defmt 0.3.100",
  "defmt-rtt",
  "embedded-hal 1.0.0",
+ "embedded-hal-bus",
  "embedded-hal-nb",
+ "embedded-sdmmc",
  "heapless",
  "nb 1.1.0",
  "panic-halt",

@@ -58,6 +58,8 @@ use middleware::icm20948_api::Icm20948Middleware;
 use drivers::bmi088::Bmi088;
 use middleware::bmi088_api::Bmi088Middleware;
 use hal::spi::Spi;
+use embedded_hal_bus::spi::ExclusiveDevice;
+use middleware::sd_api::SdApi;
 
 /// Tell the Boot ROM about our application
 #[link_section = ".start_block"]
@@ -93,6 +95,8 @@ fn main() -> ! {
     // Timers: dedicate TIMER0 to ICM20948, TIMER1 to LIS3MDL (mirrors previously working pattern)
     let timer_icm = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
     let timer_lis = hal::Timer::new_timer1(pac.TIMER1, &mut pac.RESETS, &clocks);
+    // Provide a tiny delay type for SPI/SD
+    struct TinyDelay; impl embedded_hal::delay::DelayNs for TinyDelay { fn delay_ns(&mut self,_:u32){} fn delay_us(&mut self,us:u32){ for _ in 0..(us*25){ cortex_m::asm::nop(); } } fn delay_ms(&mut self,ms:u32){ for _ in 0..ms { self.delay_us(1000);} } }
 
     // System time tracking (simulating RTC)
     let mut system_seconds = 0u32; // Seconds since boot
@@ -269,6 +273,31 @@ fn main() -> ! {
     let rv_ok = rv_api.init(&mut i2c1).is_ok();
     if rv_ok { info!("RV-8803 init OK (0x32 I2C1)"); } else { warn!("RV-8803 init FAIL (0x32 I2C1)"); }
 
+    // --- SD card on SPI1 (SCK=GP10, MOSI=GP11, MISO=GP12, CS=GP13) ---
+    // Configure pins for SPI1
+    let sck1  = pins.gpio10.into_function::<hal::gpio::FunctionSpi>();
+    let mosi1 = pins.gpio11.into_function::<hal::gpio::FunctionSpi>();
+    let miso1 = pins.gpio12.into_function::<hal::gpio::FunctionSpi>();
+    let mut cs_sd = pins.gpio13.into_push_pull_output();
+    cs_sd.set_high().ok();
+    // SPI1 at conservative 400 kHz for init
+    let sd_spi = Spi::<_, _, _, 8>::new(pac.SPI1, (mosi1, miso1, sck1)).init(
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq(),
+        hal::fugit::HertzU32::from_raw(400_000),
+        &MODE_0,
+    );
+    // Wrap with ExclusiveDevice for SpiDevice API
+    let sd_bus = ExclusiveDevice::new(sd_spi, cs_sd, TinyDelay).unwrap();
+    let sd_delay = TinyDelay;
+    use drivers::sd::SdDriver;
+    let sd_driver = match SdDriver::new(sd_bus, sd_delay) {
+        Ok(d) => { info!("SD driver created"); d }
+        Err(_e) => { warn!("SD driver creation failed"); loop {} }
+    };
+    let sd_api = SdApi::new(&sd_driver);
+    let _ = sd_api.init();
+
     // Configure external RGB LED pins: R=GP14, G=GP15, B=GP27
     let r_pin = pins.gpio14.into_push_pull_output();
     let g_pin = pins.gpio15.into_push_pull_output();
@@ -386,7 +415,27 @@ fn main() -> ! {
             // Query RTC time if available
             let mut rtc_line: Option<(u16,u8,u8,u8,u8,u8)> = None;
             if rv_ok { if let Ok(dt) = rv_api.now(&mut i2c1) { rtc_line = Some((dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)); } }
+            // Build a status line string to also write to SD once
             print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, ms5611_line, dps_line, bmi_acc, bmi_gyro, rtc_line);
+            // Compose a simple 8.3-safe line
+            if counter == constants::STATUS_PRINT_INTERVAL { // first time only
+                let g = gps_api.last();
+                let lat_whole = g.latitude / 10_000_000;
+                let lat_frac = (g.latitude % 10_000_000).abs();
+                let lon_whole = g.longitude / 10_000_000;
+                let lon_frac = (g.longitude % 10_000_000).abs();
+                let alt_m = g.altitude / 1000;
+                let mut buf = heapless::String::<256>::new();
+                let _ = core::fmt::write(
+                    &mut buf,
+                    format_args!(
+                        "Hello World - GPS {:02}/{:02}/{:04} {:02}:{:02}:{:02} lat {}.{:07} lon {}.{:07} alt {}m sats {} fix {}\r\n",
+                        g.month, g.day, g.year, g.hour, g.minute, g.second,
+                        lat_whole, lat_frac, lon_whole, lon_frac, alt_m, g.satellites, g.fix_type
+                    )
+                );
+                let _ = sd_api.write_status_line(&buf);
+            }
         }
         
     // Small delay to prevent excessive polling (use ICM timer now owned by driver)
