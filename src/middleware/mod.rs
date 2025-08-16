@@ -6,3 +6,4 @@ pub mod ms5611_api;
 pub mod icm20948_api;
 pub mod bmi088_api; // BMI088 middleware
 pub mod dps310_api; // DPS310 middleware
+pub mod rv8803_api; // RV-8803 RTC middleware

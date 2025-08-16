@@ -49,6 +49,8 @@ use drivers::ms5611::{Ms5611, MS5611_ADDR};
 use middleware::ms5611_api::Ms5611Middleware;
 use drivers::dps310::{Dps310, DPS310_ADDR};
 use middleware::dps310_api::Dps310Middleware;
+use drivers::rv8803::{Rv8803, RV8803_ADDR};
+use middleware::rv8803_api::Rv8803Api;
 use drivers::lis3mdl::Lis3mdl;
 use middleware::lis3mdl_api::Lis3MdlMiddleware;
 use drivers::icm20948::Icm20948;
@@ -261,6 +263,12 @@ fn main() -> ! {
         info!("MS5611 init OK (0x76 I2C1)");
     } else { warn!("MS5611 init FAIL (0x76 I2C1)"); }
 
+    // RV-8803 RTC on I2C1 address 0x32
+    let mut rv_driver = Rv8803::new(RV8803_ADDR);
+    let mut rv_api = Rv8803Api::new(&mut rv_driver);
+    let rv_ok = rv_api.init(&mut i2c1).is_ok();
+    if rv_ok { info!("RV-8803 init OK (0x32 I2C1)"); } else { warn!("RV-8803 init FAIL (0x32 I2C1)"); }
+
     // Configure external RGB LED pins: R=GP14, G=GP15, B=GP27
     let r_pin = pins.gpio14.into_push_pull_output();
     let g_pin = pins.gpio15.into_push_pull_output();
@@ -375,7 +383,10 @@ fn main() -> ! {
             let mut bmi_acc: Option<[i16;3]> = None;
             let mut bmi_gyro: Option<[i16;3]> = None;
             if bmi_ok { if let Ok(frame) = bmi.read() { bmi_acc = Some(frame.accel); bmi_gyro = Some(frame.gyro);} }
-            print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, ms5611_line, dps_line, bmi_acc, bmi_gyro);
+            // Query RTC time if available
+            let mut rtc_line: Option<(u16,u8,u8,u8,u8,u8)> = None;
+            if rv_ok { if let Ok(dt) = rv_api.now(&mut i2c1) { rtc_line = Some((dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)); } }
+            print_system_status(system_seconds, gps_api.last(), mag_line, imu_acc, imu_gyro, imu_mag, ms5611_line, dps_line, bmi_acc, bmi_gyro, rtc_line);
         }
         
     // Small delay to prevent excessive polling (use ICM timer now owned by driver)
@@ -397,6 +408,7 @@ fn print_system_status(
     dps_raw: Option<(i32,i32)>,
     bmi_acc: Option<[i16;3]>,
     bmi_gyro: Option<[i16;3]>,
+    rtc_time: Option<(u16,u8,u8,u8,u8,u8)>,
 ) {
     // Only print GPS time and data
     let lat_whole = gps_data.latitude / 10_000_000;
@@ -418,6 +430,7 @@ fn print_system_status(
         (None, Some(g))    => info!("BMI088: Acc[-- -- --] Gyro[{} {} {}]", g[0], g[1], g[2]),
         (None, None)       => info!("BMI088: --"),
     }
+    if let Some((y,mo,d,h,mi,s)) = rtc_time { info!("RV-8803: {:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, d, h, mi, s); } else { info!("RV-8803: --"); }
 }
 
 /// Program metadata for `picotool info`

@@ -11,3 +11,4 @@ pub mod icm20948;
 pub mod sensor_trait;
 pub mod bmi088; // BMI088 driver (hardware SPI)
 pub mod dps310; // DPS310 barometer driver
+pub mod rv8803; // RV-8803 RTC driver
