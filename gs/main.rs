@@ -2,6 +2,9 @@
 #![no_main]
 
 use panic_halt as _;
+// Link the defmt RTT logger sink for this binary
+use defmt_rtt as _;
+use defmt as _; // bring macros into crate (even if using UART for most prints)
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
 use rp235x_hal as hal;
@@ -93,7 +96,9 @@ mod app {
             clocks.peripheral_clock.freq(),
         ).unwrap();
 
-        info!(&mut uart, "GS initialization complete - starting main loop");
+    // Emit at least one defmt log so RTT stays linked and we can see defmt output
+    defmt::info!("GS boot: RTT alive (defmt)");
+    info!(&mut uart, "GS initialization complete - starting main loop");
 
         // Configure GPIO25 as output for LED
         let mut led_pin = pins.gpio25.into_pull_type::<PullNone>().into_push_pull_output();
@@ -115,7 +120,8 @@ mod app {
         let led_pin = cx.local.led_pin;
         let uart = cx.local.uart;
 
-        info!(uart, "GS entering main loop");
+    defmt::info!("GS entering main loop (defmt)");
+    info!(uart, "GS entering main loop");
         loop {
             // Ground Station - slow blink pattern (500ms on/off)
             led_pin.set_high().unwrap();

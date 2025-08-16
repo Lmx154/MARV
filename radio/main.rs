@@ -3,6 +3,9 @@
 #![no_main]
 
 use panic_halt as _;
+// Link the defmt RTT logger for this binary and import macros
+use defmt_rtt as _;
+use defmt as _;
 use rp235x_hal as hal;
 use rtic::app;
 use hal::gpio::{FunctionSioOutput, Pin, bank0::Gpio25, PullNone, FunctionSpi, PullUp, FunctionUart};
@@ -155,7 +158,8 @@ mod app {
         let mcp2515_timer = Timer::new_timer1(cx.device.TIMER1, &mut resets, &clocks);
         let mut mcp2515 = Mcp2515::new(spi_wrapper, mcp2515_cs, mcp2515_timer);
 
-        info!(&mut uart, "Initializing MCP2515 CAN controller for Radio...");
+    defmt::info!("Radio boot: RTT alive (defmt)");
+    info!(&mut uart, "Initializing MCP2515 CAN controller for Radio...");
         match mcp2515.init() {
             Ok(()) => {
                 info!(&mut uart, "MCP2515 initialization successful");
@@ -202,7 +206,8 @@ mod app {
             timer.delay_ms(75);
         }
 
-        info!(&mut uart, "Radio initialization complete - starting main loop");
+    defmt::info!("Radio init complete (defmt)");
+    info!(&mut uart, "Radio initialization complete - starting main loop");
         (Shared { mcp2515, token: false }, Local { timer, led_pin, error_count: 0, hold_timer: 0, uart })
     }
 
@@ -214,7 +219,8 @@ mod app {
         let hold_timer = cx.local.hold_timer;
         let uart = cx.local.uart;
 
-        info!(uart, "Radio entering main loop - monitoring CAN bus");
+    defmt::info!("Radio entering main loop (defmt)");
+    info!(uart, "Radio entering main loop - monitoring CAN bus");
         
         let mut heartbeat_counter = 0u32;
         

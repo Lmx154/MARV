@@ -58,6 +58,30 @@
 				"$rustc"
 			],
 			"isBackground": false
+		},
+		{
+			"label": "Build gs",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"build",
+				"--bin",
+				"gs"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Build radio",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"build",
+				"--bin",
+				"radio"
+			],
+			"isBackground": false,
+			"group": "build"
 		}
 	]
 }
